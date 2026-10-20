@@ -281,6 +281,19 @@ verify_tree() {  # <root>
     ( cd "$root" && sha256sum -c SHA256SUMS 2>&1 | grep -v ': OK$' | head -8 | sed 's/^/      /' )
   fi
 
+  # Symlinks carry no hash (SHA256SUMS is regular files only) — but the
+  # legacy-name shims and the root bootstrap entry are links a node depends
+  # on, so prove every one still resolves inside the distribution.
+  step "symlinks resolve"
+  local dangling
+  dangling="$(cd "$root" && find . -type l ! -exec test -e {} \; -print | sed 's|^\./||' | head -8)"
+  if [ -z "$dangling" ]; then
+    ok "$(cd "$root" && find . -type l | wc -l) symlinks, none dangling"
+  else
+    bad "dangling symlinks"
+    printf '%s\n' "$dangling" | sed 's/^/      /' >&2
+  fi
+
   step "VERSIONS.json"
   if python3 - "$root/VERSIONS.json" <<'PY'
 import json, sys
