@@ -96,9 +96,15 @@ REMOTE="${SPARKNET_GOAGX_REMOTE:-$REMOTE_DEFAULT}"
 # the goagx image surface, and the root files the image build COPYs or the
 # setup script drives.
 SUBTREES=(peer-node master-node contracts shared scripts .opencode/skills .opencode/agents goagx)
+# Root files the image build or the node flow names. spark.docker and
+# spark.compose.yml stay: the setup script's default platform IS spark, and a
+# distribution shipping half the platform pair fails the moment it runs bare.
+# .env.example is what env-init copies into every role vault.
 ROOT_FILES=(
   spark-entrypoint.sh spark-precontext.py spark.compose.cpu.yml
   sparknet-node-setup.sh bootstrap-agx.sh
+  spark.docker spark.compose.yml
+  .env.example
   .dockerignore .gitignore opencode.json requirements.txt
 )
 TEMPLATES="$REPO_ROOT/goagx/publish-templates"
