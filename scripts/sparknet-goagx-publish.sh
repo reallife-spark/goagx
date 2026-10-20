@@ -136,9 +136,9 @@ sha256_of() {
   else return 1; fi
 }
 
-write_sums() {  # <root>: SHA256SUMS over every file but itself
+write_sums() {  # <root>: SHA256SUMS over every file but itself and .git
   local root="$1" rel
-  ( cd "$root" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do
+  ( cd "$root" && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | while IFS= read -r f; do
       rel="${f#./}"
       [ "$rel" = "SHA256SUMS" ] && continue
       printf '%s  %s\n' "$(sha256_of "$f")" "$rel"
