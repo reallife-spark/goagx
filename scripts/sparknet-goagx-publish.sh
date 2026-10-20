@@ -424,7 +424,7 @@ overwritten by the next release — fix upstream in reallife-spark/sparknet."
 # --- drift ------------------------------------------------------------------------
 
 drift_check() {  # stage from the tree, diff against the published tip
-  local stage remote_work
+  local stage remote_work manifest
   stage="$(mktemp -d)"
   remote_work="$(mktemp -d)"
   stage_into "$stage" >/dev/null
@@ -436,6 +436,19 @@ drift_check() {  # stage from the tree, diff against the published tip
     warn "SKIPPED: cannot fetch $REMOTE (private remote unreachable or unauthenticated) — goagx drift not measured"
     return 0
   fi
+  # `published` is generation metadata stamped at stage time — normalizing it
+  # away is what keeps --drift from flagging every run on its own timestamp.
+  for manifest in "$remote_work/goagx/VERSIONS.json" "$stage/VERSIONS.json"; do
+    python3 - "$manifest" <<'PY'
+import json, sys
+path = sys.argv[1]
+m = json.load(open(path))
+m.pop("published", None)
+with open(path, "w") as fh:
+    json.dump(m, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+  done
   if diff -r --exclude=.git "$remote_work/goagx" "$stage" >"$remote_work/diff.txt" 2>&1; then
     rm -rf "$stage" "$remote_work"
     log "no drift: the published repo matches this tree"
