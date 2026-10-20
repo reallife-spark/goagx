@@ -1,0 +1,35 @@
+# Build upload exclusions for `make container-build` (build context = repo root).
+# Mirrors scripts/sparknet-bundle.sh EXCLUDES: nothing machine-local or
+# build-noise may enter the image build context, and the staged node bundle is
+# the only artifact let through from container/context/.
+
+.git
+.venv
+.state
+.cache
+dist
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+node_modules
+.opencode/node_modules
+*.pyc
+.trash
+.env
+
+# The staged bundle itself must reach the build, everything else in context is
+# transient.
+peer-node/container/context/*
+!peer-node/container/context/sparknet-peer.tar.gz
+
+# Personal/raw vault content never enters a build context. Nothing COPYs it —
+# the node image takes the curated bundle tarball only — but a build context is
+# uploaded to the (possibly remote) BuildKit builder, so keep it off the wire.
+sessions
+_raw
+_staging
+_archives
+user.md
+secrets-index.json
+**/*.ed25519
