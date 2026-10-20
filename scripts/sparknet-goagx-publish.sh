@@ -424,7 +424,7 @@ overwritten by the next release — fix upstream in reallife-spark/sparknet."
 # --- drift ------------------------------------------------------------------------
 
 drift_check() {  # stage from the tree, diff against the published tip
-  local stage remote_work manifest
+  local stage remote_work
   stage="$(mktemp -d)"
   remote_work="$(mktemp -d)"
   stage_into "$stage" >/dev/null
@@ -436,10 +436,12 @@ drift_check() {  # stage from the tree, diff against the published tip
     warn "SKIPPED: cannot fetch $REMOTE (private remote unreachable or unauthenticated) — goagx drift not measured"
     return 0
   fi
-  # `published` is generation metadata stamped at stage time — normalizing it
-  # away is what keeps --drift from flagging every run on its own timestamp.
-  for manifest in "$remote_work/goagx/VERSIONS.json" "$stage/VERSIONS.json"; do
-    python3 - "$manifest" <<'PY'
+  # Generation metadata, stamped at stage time: the manifest timestamp, the
+  # README's Published row and the hashes those two set in SHA256SUMS.
+  # Normalizing all three keeps --drift from flagging every run on its own
+  # clock — real content drift still shows.
+  for tree in "$remote_work/goagx" "$stage"; do
+    python3 - "$tree/VERSIONS.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 m = json.load(open(path))
@@ -448,6 +450,8 @@ with open(path, "w") as fh:
     json.dump(m, fh, indent=2, sort_keys=True)
     fh.write("\n")
 PY
+    LC_ALL=C sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<published>/g" "$tree/README.md"
+    write_sums "$tree"
   done
   if diff -r --exclude=.git "$remote_work/goagx" "$stage" >"$remote_work/diff.txt" 2>&1; then
     rm -rf "$stage" "$remote_work"
