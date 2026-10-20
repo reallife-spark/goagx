@@ -103,16 +103,20 @@ ROOT_FILES=(
 )
 TEMPLATES="$REPO_ROOT/goagx/publish-templates"
 
-# Same exclusions as scripts/sparknet-bundle.sh (working-tree mode): .env is
-# machine-local and must never ship; the staged peer bundle tarball is derived
-# state the setup script rebuilds on the device.
-EXCLUDES=(
-  --exclude=.git --exclude=.venv --exclude=dist --exclude=.state --exclude=.cache
-  --exclude=__pycache__ --exclude=.pytest_cache --exclude=.ruff_cache
-  --exclude=node_modules --exclude=.opencode/node_modules
-  --exclude='*.pyc' --exclude='.trash' --exclude='.env'
-  --exclude='container/context/'
-)
+# The export surface is selected with git's own view of the tree: tracked
+# files plus untracked files git would not refuse to add. That keeps .env,
+# .state, .obsidian and the staged bundle tarball out automatically — anything
+# .gitignore hides in the fabric stays hidden in the distribution, so the
+# staged tree and the published commit can never disagree on contents.
+# NUL-delimited because paths may carry spaces.
+copy_worktree() {  # <path relative to repo root>
+  local rel="$1" f
+  while IFS= read -r -d '' f; do
+    [ -e "$REPO_ROOT/$f" ] || [ -L "$REPO_ROOT/$f" ] || continue  # deleted in the worktree
+    mkdir -p "$target/$(dirname "$f")"
+    cp -a "$REPO_ROOT/$f" "$target/$f"
+  done < <(git -C "$REPO_ROOT" ls-files -z --cached --others --exclude-standard -- "$rel")
+}
 
 pin_get() { sed -n "s/^$1=//p" "$REPO_ROOT/goagx/GOSPARK_PIN" | head -1; }
 
@@ -171,14 +175,12 @@ stage_into() {  # <target-dir>
       || warn "working tree is dirty — the export includes uncommitted work (use --from-git for release-grade)"
     for subtree in "${SUBTREES[@]}"; do
       [ -e "$REPO_ROOT/$subtree" ] || die "subtree missing: $subtree"
-      mkdir -p "$target/$(dirname "$subtree")"
-      rsync -a "${EXCLUDES[@]}" "$REPO_ROOT/$subtree/" "$target/$subtree/"
+      copy_worktree "$subtree"
       log "copied  $subtree"
     done
     for f in "${ROOT_FILES[@]}"; do
       [ -e "$REPO_ROOT/$f" ] || die "root file missing: $f"
-      mkdir -p "$target/$(dirname "$f")"
-      cp -a "$REPO_ROOT/$f" "$target/$f"
+      copy_worktree "$f"
     done
   fi
 
