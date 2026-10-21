@@ -7,8 +7,8 @@ tree. Fixes belong upstream in [sparknet](https://github.com/reallife-spark/spar
 
 | | |
 |---|---|
-| Published | 2026-10-21T13:45:34Z |
-| sparknet | `91713b8006f84b58230b9f7e04e51ce18b479454` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
+| Published | 2026-10-21T15:15:46Z |
+| sparknet | `ca802cccc90c4803baf8c9dc0cbaad6ab1ec188c` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
 | goSpark | `f5477518a495db35a4318ad796bbe86d094e06c2` of [https://github.com/reallife-spark/goSpark.git](https://github.com/reallife-spark/goSpark.git) |
 | Platform | NVIDIA Jetson AGX Xavier — `sm_72`, L4T r35 (JetPack 5), 16 GB |
 | Engine | vLLM v0.2.7 built from source inside the node image |
@@ -23,6 +23,20 @@ cross-role `contracts/` and the signed-authorization implementation in
 `shared/`. A role subvault alone is not a deployment; this repo ships the
 smallest tree that actually runs, assembled by the fabric's own bundle
 machinery.
+
+## Manuals
+
+| File | Covers |
+|---|---|
+| `USER_MANUAL.md` | the **master manual** — the whole system: the five repositories, the architecture, the authority model, the contracts, the node image, the vault, every gate, and how to change something without breaking the fabric |
+| `goagx/USER_MANUAL.md` | this surface: the hardware truth table, the deltas from `spark.docker`, the image, the compose surface, the audio shim, the bootstrap, the publish and the gates |
+| `peer-node/USER_MANUAL.md` | the peer role: its services, scripts, units, manifests and vault |
+| `master-node/USER_MANUAL.md` | the master role: the election arc, the three keys, the isolated signer, the ledger and the admin surface |
+| `contracts/deployment-runbook.md`, `contracts/spark-node-runbook.md` | how a real deployment is assembled and verified |
+
+Every one of these resolves inside this repository: the distribution carries
+`contracts/` and `shared/` precisely so that the manuals' references are real
+files and not promises.
 
 ## Deploy a fresh Xavier (full fabric node)
 
@@ -78,7 +92,7 @@ push.
 
 | Path | Contents |
 |---|---|
-| `goagx/` | the AGX image surface: dockerfile, compose file, audio shim, `bootstrap-agx.sh`, `GOSPARK_PIN`, resource-first README |
+| `goagx/` | the AGX image surface: dockerfile, compose file, audio shim, `bootstrap-agx.sh`, `GOSPARK_PIN`, resource-first README, AGX manual |
 | `peer-node/` `master-node/` | both role subvaults (keys, units, guard, services) |
 | `contracts/` `shared/` | the cross-role contract and the signed-authorization implementation — a node cannot run without them |
 | `scripts/` | bundle, env-init, this repo's publish/verify tool |
