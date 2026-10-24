@@ -26,6 +26,30 @@ Neither role re-implements the algorithm. Neither role may edit this file to
 serve a local need; a change belongs in `contracts/` first, with both roles
 updated in the same commit.
 
+### The guard-approval projection
+
+`guard_approval_message()` is a second canonical form in the same module: the
+bytes a Master signature over a guard approval covers. It is here for exactly
+the reason the rest of the module is — the Master **signs** the approval and
+the peer **verifies** it, so the two must agree on the projection byte for
+byte.
+
+It is strict in both directions: a missing field is refused, and so is an
+*extra* one. The signature covers exactly the projection, so anything outside
+it is unsigned, and an unsigned field in an envelope that carries authority is
+how a second, unchecked channel into the guard would appear later.
+
+This projection was **not** here before Master build-plan Step 5, and its
+absence was the defect: the Master's issuer, the isolated signer and the
+peer's guard each carried their own idea of an approval's shape — three
+different field sets, each internally consistent, each passing its own tests.
+No approval the Master could mint was one a peer would accept, and nothing
+failed loudly, because every side agreed with itself.
+
+The contract is `contracts/guard-approval.json` (machine-readable) and
+`contracts/guard-protocol.md` (narrative). `tests/test_contracts.py` fails the
+build if a second copy of the field list appears in either role.
+
 ## `sparknet-consensus.py`
 
 How the cluster agrees on who holds the signing key: master election, the
@@ -76,6 +100,74 @@ uses.
 **Replay defence is the freshness window.** A signature is only good within
 `max_age_seconds` of the timestamp it names, and the clock is injectable so the
 window is testable without sleeping.
+
+## `sparknet-registry-schema.py`
+
+The checker for the **shape** of a node-authorization registry: it reads
+`contracts/registry-schema.json` — the one statement of what a registry looks
+like — and reports every way a document departs from it. Fields present and
+absent, types, the fingerprint that must match the identity it carries, the
+closed capability vocabulary, and each entry's signature under the
+`master_public_key_b64` the document names.
+
+**Why it is here and not in a role.** The Master signs a registry and a peer
+verifies it. If the two checked against different expectations, a registry the
+Master considered good would be rejected by the peer — and the failure would
+look like a signature problem, not a shape problem, which is the worst place to
+debug it. One checker, one contract, both roles.
+
+**Why it reads the standard library only.** The fabric's runtime dependency
+allow-list is `cryptography` alone, and the CI gate installs exactly that plus
+pytest and ruff. A validator that needed `jsonschema` would pass here and fail
+on a node, so this one interprets the small schema vocabulary the contract
+declares — and **refuses** a keyword it does not implement rather than ignoring
+it. A rule nobody enforces is a rule that quietly stops being true.
+
+**It never re-implements the scheme.** The canonical form, the fingerprint and
+the signature check all come from `sparknet-authz.py`, loaded by path from this
+directory — the same loader pattern the other modules use, and the same refusal
+to fall back to a local copy.
+
+## `sparknet-registry-install.py`
+
+The peer-side **acceptance rule** for a registry publication: exact envelope,
+signature over the canonical projection, the registry naming the key the peer
+pinned, the document satisfying `registry-schema.json`, and a sequence strictly
+greater than the installed one. It installs atomically (registry, then the
+sequence record) and refuses a replay.
+
+**Why it is here and not in a role.** Both roles run it. The peer runs it on both
+receive paths — the guard's live `POST /api/v1/registry` and the offline
+`sparknet-registry-client.py` — and the Master runs the same function on its own
+output before writing `current.json`: *what the Master emits must be what the
+receiver's rule accepts*, checked by the receiver's code rather than by the
+emitter agreeing with itself. A second copy for the offline path is exactly how
+"the peer accepted it" would stop meaning one thing.
+
+**It never re-implements the signature rule.** The canonical projection, the
+digest and the envelope check come from `sparknet-authz.py`; the document shape
+comes from `sparknet-registry-schema.py`. This module owns only the *order* of
+acceptance, the sequence watermark and the two-write installation.
+
+## `sparknet-reflex.py`
+
+The **typed reflex decision contract**: request/answer shapes for the
+Choice/Score/Noul vocabulary, abstain as a first-class outcome, a cache key that
+names the exact model and policy, and an audit line that carries hashes rather
+than state. The contract is `contracts/reflex-schema.json`.
+
+**Why it is here and not in a role.** A peer and the Master must agree on what a
+reflex request and a reflex verdict are, or a decision produced on one side
+cannot be audited or compared on the other. The module is also the place the
+**no-authority invariant** is enforced: authority-shaped fields are refused, and
+`is_authority_path()` names the surfaces (guard, signer, registry, authz) that
+must never consult reflex at all. A verdict may rank, annotate, route or flag;
+it may not sign, grant, revoke, approve or widen.
+
+**It is deliberately standard library only.** The fabric's runtime allow-list is
+`cryptography` alone; this module needs neither the network nor crypto, so it
+adds no dependency. Transport and vendor calls belong to the caller
+(`sparknet-reflex-broker.py` on the Master), not here.
 
 ## Adding to this directory
 

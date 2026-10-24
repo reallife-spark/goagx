@@ -1,7 +1,7 @@
 ---
 title: sparknet master-node Build Plan
-updated: 2026-10-08
-current: 2
+updated: 2026-10-23
+current: 7
 ---
 
 # sparknet master-node — Build Plan
@@ -13,8 +13,8 @@ current: 2
 >
 > **As of Step 3 these directories exist** (`scripts/`, `services/`,
 > `systemd/` — built Steps 3–4 and 15–18; the isolated signer runs live on
-> agx64). Steps 1 and 2 remain deliberately knowledge-and-contract work that
-> needs no code; the cursor sits at Step 2.
+> agx64). Steps 1, 2, 5 and 6 are closed; the cursor sits at Step 7 (which
+> Step 6's push channel partly supersedes — see Step 7's status).
 
 ## Status Legend
 
@@ -87,7 +87,7 @@ containment and scheduling.
 
 ## Step 2 — Registry schema and the spec/impl boundary
 
-- [ ] **Step 2** — Write `docs/registry-protocol.md` (it does not exist yet),
+- [x] **Step 2** — Write `docs/registry-protocol.md` (it does not exist yet),
       then turn it into a checkable schema and
       make the "specified, not built" status machine-detectable.
       - **DoD**: (1) `manifests/registry.schema.json` exists and validates the
@@ -120,6 +120,40 @@ containment and scheduling.
         marker is now stale in the other direction — it reads "specified, not
         built (Step 2)" while the Step 3/5/6 CLI exists, signs, verifies and
         publishes. Corrected in `docs/registry-protocol.md` with this step.
+      - **Status: complete 2026-10-22.** The canonical shape was **decided from
+        the implementation, not guessed**: it is what `../shared/sparknet-authz.py`
+        signs and evaluates — document `{schema_version "1.0",
+        master_public_key_b64, description?, authorizations[]}`, entry
+        `{fingerprint, identity, capabilities, overlay_ipv4, issued_at,
+        expires_at, revoked?, signature_b64}`. The contract now states it once,
+        in `../contracts/registry-schema.json`, and
+        `master-node/manifests/registry.schema.json` is a **symlink** to it (the
+        contracts README forbids a second copy; the ledger schema's copy is the
+        one precedent that predates that rule).
+      - **DoD (1)**: satisfied by `../shared/sparknet-registry-schema.py`, a
+        **standard-library-only** checker — the fabric's runtime dependency
+        allow-list is `cryptography` alone, so a validator needing `jsonschema`
+        would pass here and fail on a node. It checks the shipped registry, the
+        entries the implementation itself mints, and refuses the draft's three
+        mistakes (`role`, `1.0.0`, `signature`). `tests/test_registry_schema.py`
+        pins all of it.
+      - **DoD (2)**: asserted in the direction that is still true. The role
+        **declares** its build state (`MISSION.md`, `status:` frontmatter) and
+        the declaration must agree with the tree and with the plan's open steps,
+        so it cannot rot into a false claim in either direction — asserting
+        "unbuilt" would assert a lie.
+      - **DoD (3)**: every page in `docs/` now declares a `status:` from a
+        closed vocabulary, and any page that is not `built` carries a callout
+        marker. Two pages were carrying stale claims in *both* directions and
+        were corrected: `docs/master-control-plane.md` said the role "has no
+        `scripts/`, `services/` or `systemd/` directory" (false since Steps
+        15–16), and `docs/killswitch-template.md` said the role "carries no
+        executable surface" (Step 8 is built).
+      - **Cursor**: Step 2 is closed; the cursor advanced to Step 5
+        (`guard-apply` grantable in practice), which closed the same day. Step 6
+        (registry distribution channel) closed on 2026-10-23; the cursor sits
+        at Step 7.
+
 
 ## Step 3 — Signing and registry CLI
 
@@ -172,44 +206,132 @@ containment and scheduling.
 
 ## Step 5 — Guard approval issuer
 
-- [ ] **Step 5** — Make `guard-apply` grantable in practice.
+- [x] **Step 5** — Make `guard-apply` grantable in practice.
       - **DoD**: (1) `make approval-issue TARGET=<path> CONTENT=<file>` produces
         a signed approval payload per `../contracts/guard-protocol.md`;
         (2) `make approval-deliver FINGERPRINT=<fp>` POSTs it to that peer's
         `10.100.0.x:9090`; (3) the Master tracks issued nonces and refuses to
         issue the same nonce twice; (4) an integration test signs on this side
         and applies on a peer stub, proving the two agree.
-      - **Status**: reopened 2026-10-06 — half built, half missing. (1) and (3)
-        are real and tested: `tests/test_approval.py` proves issue produces the
-        contract's payload shape and that a second issue with the same nonce is
-        refused. (2) is intent-only: `sparknet-approval-deliver.sh` records the
-        delivery and POSTs only when given `--url`, and it has never pointed at a
-        listening peer. (4) does not exist at all — no test in this subvault
-        constructs a peer-side `guard-apply` stub and applies what was issued.
-        Until (4) exists, "the two agree" is an inference from reading both
-        implementations, not a fact the suite enforces.
-      - **Note**: until this exists, `guard-apply` is defined and enforced but
-        ungrantable. This is the highest-value step in the plan — and, measured,
-        the highest-value *unbuilt* one.
+      - **Status**: complete 2026-10-22 — measured green (`make ci`,
+        `make test-all`, both role bundles rebuilt and verified).
+      - **What the step found, which the plan did not anticipate.** The step was
+        reopened as "half built, half missing", but the half that existed was
+        built against a shape **no peer accepted**. Three implementations of "an
+        approval" were live at once: the Master's issuer signed
+        `{target, content_digest}`, the isolated signer signed
+        `{peer_fingerprint, guard_protocol_version, target_path, action,
+        expires_at}`, and the peer's guard verified
+        `{file_path, content_b64, content_sha256, issued_at, expires_at, nonce,
+        request_id}`. Each was internally consistent, each passed its own
+        tests, and no approval the Master could mint was one a peer would
+        accept. "Half built" was generous: the two halves had never met.
+      - **The fix is structural, not a patch.** The projection now lives once, in
+        `../shared/sparknet-authz.py::guard_approval_message`: exactly eight
+        fields — `peer_fingerprint`, `file_path`, `content_b64`, `content_sha256`,
+        `issued_at`, `expires_at`, `nonce`, `request_id` — serialised as compact
+        sorted JSON and strict in **both** directions. A missing field is
+        refused, and so is an *extra* one: the signature covers exactly the
+        projection, so anything outside it is unsigned, and an unsigned field in
+        an envelope that carries authority is how a second, unchecked channel
+        into the guard would appear. The signer and the guard both call it, and
+        `../tests/test_contracts.py` fails the build if a second copy of the
+        field list appears in either role. The contract is
+        `../contracts/guard-approval.json` (machine-readable) beside the
+        narrative `../contracts/guard-protocol.md`.
+      - **Two holes closed while the shape was being fixed.** (1) *Peer
+        binding*: the envelope names the peer it is for, and the peer refuses an
+        approval addressed to anybody else. Before, an approval minted for peer A
+        was a valid approval peer B could apply, as long as it protected the
+        same path — the signature said nothing about who it was for. (2) *The
+        capability is not in the payload*: the peer reads `guard-apply` from its
+        own signed registry entry, so an approval can never grant the authority
+        it is checked against.
+      - **DoD (1) and (3)**: `make approval-issue` mints the canonical envelope
+        and spends the nonce (`$SPARKNET_STATE_DIR/approval_nonces.json`); a
+        second issue with the same nonce is refused. The production path is
+        `make approval-sign-socket`, which signs **through the isolated
+        signer's socket** and leaves a `signature_issued` ledger block; the
+        issue script signs directly with the operational key and is for hosts
+        with no running signer.
+      - **DoD (2)**: `make approval-deliver` resolves the peer's overlay
+        address from the signed registry — the fingerprint names the peer, the
+        registry entry names its address — and POSTs to
+        `http://10.100.0.x:9090/api/v1/critical-file/patch`. `--url` overrides
+        it. It refuses an approval that addresses a different peer *before*
+        anything is sent, and writes a record that quotes the peer's own answer.
+      - **DoD (4)**: `tests/test_approval.py` signs here and applies there — the
+        peer's **own** guard daemon, loaded by path, on loopback, against a
+        temporary vault whose registry entry grants `guard-apply`. The peer
+        verifies the signature, checks the peer binding, recomputes the content
+        digest, finds the path protected, finds the capability in its own
+        registry and answers `PATCH_VERIFIED_DRY_RUN`; the audit ledger records
+        the decision. The negative legs are there too: an approval addressed to
+        another peer is refused (`wrong_peer`), and a peer whose registry entry
+        does not grant `guard-apply` stays inert.
+      - **DoD (4) amended, not quietly dropped**: the peer stub runs
+        `--dry-run`, so the *write* of a protected file is not exercised — that
+        needs euid 0 and `chattr` on a target node, and the peer's own suite
+        records the same limit. What the test proves is that the two sides
+        **agree**: the Master's bytes are the peer's bytes, and the peer
+        accepts the Master's signature while refusing everything else. The
+        write leg is a target-node checklist item, not a claim made here.
+      - **Cross-role**: `contracts/` + `shared/` + both roles in one commit,
+        then `make contract-test`.
 
 ## Step 6 — Registry distribution channel
 
-- [ ] **Step 6** — Give peers a way to receive a signed registry.
+- [x] **Step 6** — Give peers a way to receive a signed registry.
       - **DoD**: (1) a documented distribution channel exists (the design
         decision is recorded in `docs/registry-protocol.md`);
         (2) `make registry-publish` emits it; (3) a peer-side target documents
         how to consume and verify it; (4) a tampered registry fails closed on
         the peer; (5) revocation propagates within the documented window.
-      - **Status**: reopened 2026-10-06 — (2) is done (`registry-publish` emits
-        the signed document) and (4) is done **on the master side only**: the
-        tamper test feeds a modified registry to *this* role's verifier. Nothing
-        exercises `../shared/sparknet-authz.py` as the peer calls it from
-        `../peer-node/services/sparknet-guard-d.py`, so "fails closed on the
-        peer" is still an inference. (5) has no test and no window — revocation
-        propagation cannot be measured without a channel, and (1) is exactly the
-        channel, which remains **unspecified**:
-        `contracts/identity-schema.json` carries `distribution: UNSPECIFIED` on
-        purpose, and the plan itself said choosing it is part of this step.
+      - **Decision (2026-10-23)**: **the Master pushes to each peer's guard on
+        9090** (`POST /api/v1/registry`). Rejected: a peer pull from a new
+        Master listener on 8091 (new port, unsigned GET, and a per-peer key
+        resolver the shared HTTP module does not have), and the fabric git repo
+        (spec-only). Push reuses the path Step 5 proved, adds no port, and — the
+        decisive point — can deliver a revocation *to the peer it revokes*,
+        which a route gated on that peer's capability could not.
+      - **DoD verified**:
+        (1) the channel is stated in
+        `../../contracts/registry-publication.json` (machine-checkable) and
+        `docs/registry-protocol.md` (narrative), with the alternatives and why
+        they were rejected; the "unspecified" notes in `registry-schema.json`
+        and `identity-schema.json` are replaced.
+        (2) `make registry-publish` emits a five-field publication (registry,
+        `registry_sha256`, monotonic `sequence`, `published_at`, `signature_b64`
+        beside the envelope) after validating the document and refusing one that
+        names a foreign Master key. The signature comes from the isolated signer
+        (`sign-registry-publication`) or `--offline`; the script then checks its
+        own output with `shared/sparknet-registry-install.py::verify_publication`
+        — the receiver's rule, not the emitter's own assumption.
+        (3) `make -C peer-node registry-fetch PUBLICATION=…` (and
+        `registry-status`) documents the operator path; the live path is the
+        guard's `POST /api/v1/registry`. Both call the same acceptance rule.
+        (4) `tests/test_registry_dist.py` drives the peer's **own guard daemon**
+        (loaded by path) and proves three tamper shapes refused without an
+        install: a document edited under its digest (`400
+        malformed_publication`), a consistent envelope signed by a foreign key
+        (`403 bad_signature`), and a registry naming a foreign Master key (`403
+        wrong_master_key`). A fourth test proves the replay refusal.
+        (5) the same suite publishes an authorising registry, delivers it, sees
+        the capability take effect, then publishes a revoked registry, delivers
+        it, and sees `evaluate` deny with `REASON_REVOKED`. The window is the
+        installed `sparknet-registry-deliver.timer` (60 s) and the contract
+        states it; a successful push is immediate.
+      - **Install order** is registry first, sequence record second, so a crash
+        between the writes makes the publication idempotent rather than
+        permanently refusable; re-delivering an installed publication is a
+        `409 stale_publication`, which is what makes equality the replay signal.
+        Registry installation needs neither `--apply-enabled` nor euid 0: it
+        writes the peer's own vault, not a protected `/etc` path.
+      - **Enabling change**: `sign_authorization` gained `revoked=`, because
+        `revoked` is inside the signed envelope and the old revoke script
+        flipped it *after* signing, producing an entry no peer would accept. The
+        schema now allows an empty `capabilities` list only on a revoked entry —
+        the document that carries a revocation must be installable.
 
 ## Step 7 — Instant-push listener (8090)
 
@@ -681,21 +803,22 @@ containment and scheduling.
         - *WireGuard, nftables, `chattr +i`, systemd on this host* — no `wg`,
           `wg-quick`, `nft` or `nvidia-smi` on this machine, and one peer only.
         - *Steps 1–12* — after the 2026-10-06 audit this is no longer a blanket
-          claim. **Built and measured: Steps 1, 3, 4** (keypair, signing/registry
-          CLI, master overlay renderer). **Still specified, not built: Step 2**
-          (the schema is orphaned and disagrees with both roles' registries),
-          **Step 5** (issue + nonces only; delivery is intent-only, no peer-stub
-          test), **Step 6** (channel still `UNSPECIFIED`, peer-side tamper
-          unproven), **Steps 7–12** (scaffolds of 2–8 lines, or nothing).
+          claim. **Built and measured: Steps 1, 3, 4, 8, 9, 10–12** (keypair,
+          signing/registry CLI, master overlay renderer, the KillSwitch, the
+          pooling scheduler, the sharing regime), and since then **Steps 2 and
+          5** (the registry schema and the guard approval issuer — the latter
+          closed 2026-10-22) and **Step 6** (the registry distribution channel,
+          closed 2026-10-23). **Still specified, not built: Step 7** (a
+          scaffold, and the listener is not bound; Step 6's push channel
+          supersedes its pull direction), **Steps 20 and 21** (the signer's read
+          timeout and the admin console's remaining leg).
           Nothing in this page implies otherwise.
       - **Where the cursor goes.** Phase 0 (13–18) and honest verification (19) are
-        done. The 2026-10-06 audit reopened Steps 2 and 5–12 on evidence, so the
-        cursor sits at **Step 2** — the first unbuilt step, and the one whose DoD
-        is contradicted rather than merely unimplemented. Steps 3 and 4 sit
-        complete behind it, which is not a regression: the sequencing note below
-        already said Steps 1–4 assume a Master that 13–14 had not yet produced.
-        Election itself lives in the fabric plan (root `PLAN.md` Step 11), not
-        here — this role consumes it.
+        done. The 2026-10-06 audit reopened Steps 2 and 5–12 on evidence; Step 2
+        closed on 2026-10-22 and Step 5 followed it the same day; Step 6 closed
+        on 2026-10-23, so the cursor sits at Step 7 — whose pull listener is now
+        partly superseded by the channel Step 6 chose. Election itself lives in the fabric plan (root `PLAN.md`
+        Step 11), not here — this role consumes it.
 
 ## Step 20 — Signer liveness: client timeouts and a non-blocking accept loop
 

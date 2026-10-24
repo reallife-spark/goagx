@@ -2,19 +2,20 @@
 title: Master control plane
 type: specification
 role: master
-status: unbuilt
-updated: 2026-10-04
+status: partially-built
+updated: 2026-10-22
 ---
 
 # Master control plane
 
-> [!warning] Specification only — nothing on this page is implemented
-> This role has no `scripts/`, `services/` or `systemd/` directory. The
-> components below describe what the Master **must** do, not what it does.
-> The work order is [`../plans/MASTER_BUILD_PLAN.md`](../plans/MASTER_BUILD_PLAN.md).
+> [!warning] Some of this page is not built — each unbuilt part is marked
+> This role **has** `scripts/`, `services/` and `systemd/` (Steps 15–18). The
+> components below describe what the Master **must** do; the table marks the
+> ones that do it today. The work order is
+> [`../plans/MASTER_BUILD_PLAN.md`](../plans/MASTER_BUILD_PLAN.md).
 >
-> The one thing that *is* implemented is the signed canonical form in
-> `../../../shared/sparknet-authz.py`, which this role will sign with.
+> The signed canonical form in [`../../shared/sparknet-authz.py`](../../shared/sparknet-authz.py)
+> is implemented and is what the Master signs with.
 
 ## What the Master owns
 
@@ -47,18 +48,18 @@ infrastructure service may not load, invoke or proxy to the signing key.
 
 ## Components
 
-| Component | Purpose | Build plan step |
-|---|---|---|
-| Key lifecycle | generate, rotate, and above all *not lose* the private key | 1 |
-| Registry schema | machine-checkable shape for the signed record | 2 |
-| Signing CLI | `authz-sign`, `registry-verify`, `revoke` | 3 |
-| Overlay listener | master `wg0`, one stanza per authorized peer | 4 |
-| Approval issuer | signs and delivers `guard-apply` payloads | 5 |
-| Registry distribution | how a signed registry reaches a peer | 6 |
-| Instant push (`8090`) | ACL changes POSTed to peers | 7 |
-| Cluster KillSwitch | fabric-wide containment | 8 |
-| Pooling scheduler | idle detection, pooled-memory batches | 9 |
-| Git / file share / NAT / vector DB (`4220`–`4223`) | infrastructure administration | `MASTER_ADMIN_PLAN.md` (spec-only) |
+| Component | Purpose | State | Build plan step |
+|---|---|---|---|
+| Key lifecycle | generate, rotate, and above all *not lose* the private key | built | 1 |
+| Registry schema | machine-checkable shape for the signed record | built (Step 2) | 2 |
+| Signing CLI | `authz-sign`, `registry-verify`, `revoke` | built | 3 |
+| Overlay listener | master `wg0`, one stanza per authorized peer | built | 4 |
+| Approval issuer | signs and delivers `guard-apply` payloads | **half built** — the payload is signed and nonces are tracked; nothing has delivered one to a listening peer, and no test applies an issued payload on a peer stub | 5 |
+| Registry distribution | how a signed registry reaches a peer | **not built** — the channel is unspecified (`distribution: UNSPECIFIED`); peers read an operator-placed registry | 6 |
+| Instant push (`8090`) | ACL changes POSTed to peers | **not built** — the listener is a stub and `contracts/ports.json` still records `8090` as `spec-only` | 7 |
+| Cluster KillSwitch | fabric-wide containment | built | 8 |
+| Pooling scheduler | idle detection, pooled-memory batches | built | 9 |
+| Git / file share / NAT / vector DB (`4220`–`4223`) | infrastructure administration | **not built** — all four are `spec-only` in `contracts/ports.json` | `MASTER_ADMIN_PLAN.md` |
 
 ## The signing path
 
@@ -140,6 +141,9 @@ What exists today:
 - [`../../contracts/guard-protocol.md`](../../contracts/guard-protocol.md) — the
   approval conversation, and why the Master side of it is the isolated signer
   (Step 17) rather than another service
+- [`../../contracts/guard-approval.json`](../../contracts/guard-approval.json) —
+  the approval envelope as a machine-readable contract: the eight fields, the
+  canonical bytes, the transport
 - [`../../contracts/ports.json`](../../contracts/ports.json) — which role listens
   where, and which of those listeners are still declared-but-unimplemented.
   `implementation_state` travels with the contract; `runtime` is measured per host
@@ -155,6 +159,9 @@ line of it.
 | `services/sparknet-ledger.py` | verifies the Master's hash chain | `make ledger` |
 | `scripts/sparknet-master-env.sh` | resolves vault + peer paths | `make env-show` |
 | `scripts/sparknet-master-keygen.sh` | writes 3 Ed25519 keys to `$SPARKNET_STATE_DIR/keys`, 0600 | `make keygen`, `make keys-check` |
+| `scripts/sparknet-approval-issue.sh` | mints a canonical guard approval and spends its nonce | `make approval-issue`, `tests/test_approval.py` |
+| `scripts/sparknet-approval-sign-socket.sh` | signs an approval **through the signer socket**, recording a ledger block | `make approval-sign-socket`, `tests/test_signer_isolation.py` |
+| `scripts/sparknet-approval-deliver.sh` | POSTs the approval to the peer it names | `make approval-deliver`, `tests/test_approval.py` |
 | `systemd/*.service` | parity check and chain verification at boot | `make units`, `make units-check` |
 
 The parity loader is the load-bearing one. It is what makes "a Master is a peer"
@@ -170,9 +177,8 @@ protect, so the honest state is verify-only. Key custody is described in
 [`../security/key-management.md`](../security/key-management.md).
 
 **Not written yet**, and named here so their absence is visible rather than
-implied: `docs/registry-protocol.md`, `docs/network-posture.md`. Each is the
-subject of a numbered step in the build plan; do not read this page as covering
-them in the meantime.
+implied: `docs/network-posture.md`. (`docs/registry-protocol.md` exists since
+Step 2.) Do not read this page as covering the missing one in the meantime.
 
 [`killswitch-template.md`](killswitch-template.md) exists, but read its header
 first: it is the preserved earliest draft of the cluster KillSwitch, it logs its

@@ -22,14 +22,15 @@ Applying a patch means lifting ``chattr +i`` on a root-owned file under /etc and
 writing it. That requires ALL of:
 
 1. a valid Ed25519 signature from the Master over the approval envelope,
-2. an unexpired, un-replayed request (nonce + request_id + expiry),
-3. a target listed in ``protected_paths`` of the critical manifest,
-4. the node's own authorization entry to grant ``guard-apply``,
-5. euid == 0,
-6. ``--apply-enabled`` on the command line.
+2. an approval addressed to *this* peer (its fingerprint is in the envelope),
+3. an unexpired, un-replayed request (nonce + request_id + expiry),
+4. a target listed in ``protected_paths`` of the critical manifest,
+5. the node's own authorization entry to grant ``guard-apply``,
+6. euid == 0,
+7. ``--apply-enabled`` on the command line.
 
 Any missing condition is a refusal, never a partial write. Verification and
-auditing happen regardless of (5) and (6), so an unarmed daemon still leaves a
+auditing happen regardless of (6) and (7), so an unarmed daemon still leaves a
 complete audit trail.
 """
 
@@ -70,7 +71,13 @@ DEFAULT_VAULT_ROOT = SERVICE_DIR.parent
 # content* is inside it. content_b64 must be signed, not merely hashed-and-sent:
 # signing the hash alone would let anything on the path substitute the bytes and
 # still match the digest.
-APPROVAL_FIELDS = ("file_path", "content_b64", "content_sha256", "issued_at", "expires_at", "nonce", "request_id")
+#
+# The *rule* — which fields, and how they are serialised — is not written here.
+# It lives in shared/sparknet-authz.py::guard_approval_message, because the
+# Master signs with it and this daemon verifies with it. A second copy of that
+# rule is how the two sides drift apart while each keeps working against its own
+# assumption; this daemon used to carry exactly such a copy, and the Master used
+# to carry a third.
 
 #: Fallback when manifests/security-policies.json is unreadable. Fail to the
 #: documented topology rather than to "accept everything".
@@ -78,12 +85,16 @@ DEFAULT_MASTER_ANCHOR_IP = "10.100.0.1"
 
 
 def approval_message(payload: dict[str, Any]) -> bytes:
-    """Deterministic bytes the Master signs."""
-    try:
-        envelope = {field: payload[field] for field in APPROVAL_FIELDS}
-    except KeyError as exc:
-        raise ValueError(f"approval payload missing field: {exc}") from exc
-    return json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """Deterministic bytes the Master signs for one approval.
+
+    Delegates to the one implementation in ``shared/sparknet-authz.py``. The
+    daemon does not decide what an approval looks like; it decides what to do
+    with one.
+    """
+    authz = _load_authz_module()
+    if authz is None:
+        raise RuntimeError("shared/sparknet-authz.py not found; the guard cannot canonicalise an approval")
+    return authz.guard_approval_message(payload)
 
 
 class Refusal(Exception):
@@ -418,6 +429,25 @@ def _load_authz_module():
     return _load_shared_module("sparknet-authz.py", "sparknet_authz")
 
 
+def _load_registry_schema_module():
+    """The shared registry checker: the shape a published registry must have.
+
+    The same module the Master runs before publishing, loaded by path. A peer
+    that installed a document this checker refuses would be installing a shape
+    no other node agrees with.
+    """
+    return _load_shared_module("sparknet-registry-schema.py", "sparknet_registry_schema")
+
+
+def _load_registry_install_module():
+    """The shared acceptance rule: what makes a publication installable.
+
+    Loaded by path, like every other shared module, so the guard and the offline
+    registry client cannot disagree about it.
+    """
+    return _load_shared_module("sparknet-registry-install.py", "sparknet_registry_install")
+
+
 def _load_http_module():
     """The shared sparknet-http.py: the one handler base every listener uses.
 
@@ -492,6 +522,30 @@ class Guard:
         decision = sparknet_authz.evaluate(identity, registry, pubkey)
         return decision.capabilities if decision.allowed else []
 
+    def own_fingerprint(self) -> str | None:
+        """This node's own fingerprint, from its own identity manifest.
+
+        An approval names the peer it is addressed to. Without this, a valid
+        signature would say only *that* the Master signed something — not that
+        the Master meant *this* node, and an approval minted for one peer could
+        be applied by another that protects the same path.
+
+        None means the node cannot say who it is, and the daemon refuses
+        approvals rather than accepting one it cannot attribute.
+        """
+        sparknet_authz = _load_authz_module()
+        if sparknet_authz is None:
+            return None
+        identity_path = self.vault_root / "manifests" / "node-identity.json"
+        try:
+            identity = json.loads(identity_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            return sparknet_authz.fingerprint(identity)
+        except Exception:
+            return None
+
     def mode(self) -> str:
         """anchored when an overlay address is configured and reachable."""
         address = self.overlay_address()
@@ -540,6 +594,63 @@ class Guard:
         """Client addresses allowed to submit a patch request."""
         return {"127.0.0.1", "::1", self.master_anchor_address()}
 
+    # -- registry intake ----------------------------------------------------
+
+    def installed_sequence(self) -> int:
+        """The highest publication sequence this node has installed, 0 if none."""
+        install = _load_registry_install_module()
+        if install is None:
+            return 0
+        return install.installed_sequence(self.vault_root)
+
+    def handle_registry(self, artifact: Any) -> dict[str, Any]:
+        """Install one signed registry publication, or refuse it.
+
+        This is the peer's half of the distribution channel. It is deliberately
+        *not* gated on the peer's own ``guard-apply`` capability: the node being
+        revoked must be able to receive the registry that revokes it, and a
+        revocation the revoked node cannot hear is not a revocation.
+
+        The acceptance rule itself lives once in
+        ``shared/sparknet-registry-install.py``, because the offline registry
+        client installs publications too.
+        """
+        with self._apply_lock:
+            return self._handle_registry_locked(artifact)
+
+    def _handle_registry_locked(self, artifact: Any) -> dict[str, Any]:
+        authz = _load_authz_module()
+        schema = _load_registry_schema_module()
+        install = _load_registry_install_module()
+        if self.master_pubkey is None:
+            raise Refusal(503, "no_master_key", "guard has no Master public key loaded")
+        if authz is None or schema is None or install is None:
+            raise Refusal(503, "no_contract", "shared registry code is not available")
+        try:
+            result = install.accept_publication(
+                self.vault_root,
+                artifact,
+                authz,
+                schema,
+                self.master_pubkey,
+                dry_run=self.dry_run,
+            )
+        except install.InstallError as exc:
+            sequence = artifact.get("sequence") if isinstance(artifact, dict) else None
+            self.ledger.append("registry_refused", {"code": exc.code, "sequence": sequence, "detail": exc.detail[:500]})
+            raise Refusal(exc.status, exc.code, exc.detail) from exc
+
+        event = "registry_verified_dry_run" if self.dry_run else "registry_installed"
+        block = self.ledger.append(
+            event,
+            {
+                "sequence": result["sequence"],
+                "registry_sha256": result["registry_sha256"],
+                "entries": result["entries"],
+            },
+        )
+        return {**result, "audit_block": block["hash"]}
+
     # -- request handling ---------------------------------------------------
 
     def handle_patch(self, packet: dict[str, Any]) -> dict[str, Any]:
@@ -566,21 +677,52 @@ class Guard:
         except Exception as exc:
             raise Refusal(400, "malformed_packet", str(exc)) from exc
 
-        # 1. Master signature, before anything else is trusted.
+        # The canonical bytes are a function of the parsed fields, so the payload
+        # is parsed before the signature is checked. Parsing is not a trust
+        # decision: no value below is read before the signature over the
+        # canonical projection has verified.
+        #
+        # A guard with no Master key cannot verify anything, so it says so
+        # before it reads anything: 503 is the honest answer to any request,
+        # and it costs nothing to compute.
         if self.master_pubkey is None:
             raise Refusal(503, "no_master_key", "guard has no Master public key loaded")
-        try:
-            self.master_pubkey.verify(signature, message)
-        except InvalidSignature as exc:
-            self.ledger.append("patch_refused", {"code": "bad_signature"})
-            raise Refusal(403, "bad_signature", "Ed25519 verification failed") from exc
 
         try:
             payload = json.loads(message.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise Refusal(400, "malformed_payload", str(exc)) from exc
+        if not isinstance(payload, dict):
+            raise Refusal(400, "malformed_payload", "approval payload must be an object")
 
-        # 2. Replay / expiry.
+        # The one canonical rule, shared with the signer. A payload with a
+        # missing or an extra field is refused here rather than half-read: the
+        # signature covers exactly the canonical projection, so an extra field
+        # would be unsigned authority-shaped data.
+        try:
+            canonical = approval_message(payload)
+        except Exception as exc:
+            raise Refusal(400, "malformed_approval", str(exc)) from exc
+
+        # 1. Master signature, before anything else is trusted.
+        try:
+            self.master_pubkey.verify(signature, canonical)
+        except InvalidSignature as exc:
+            self.ledger.append("patch_refused", {"code": "bad_signature"})
+            raise Refusal(403, "bad_signature", "Ed25519 verification failed") from exc
+
+        # 2. The approval must be addressed to *this* peer. A signature says
+        #    nothing about who an approval is for unless the payload says so,
+        #    and without that an approval minted for one peer could be applied
+        #    by another that protects the same path.
+        mine = self.own_fingerprint()
+        if mine is None:
+            raise Refusal(503, "no_identity", "this node has no usable identity manifest")
+        if payload.get("peer_fingerprint") != mine:
+            self.ledger.append("patch_refused", {"code": "wrong_peer", "claimed": payload.get("peer_fingerprint")})
+            raise Refusal(403, "wrong_peer", "the approval names another peer")
+
+        # 3. Replay / expiry.
         try:
             self.replay.check(
                 str(payload.get("nonce", "")),
@@ -592,7 +734,7 @@ class Guard:
             self.ledger.append("patch_refused", {"code": refusal.code, "detail": refusal.detail})
             raise
 
-        # 3. Content integrity.
+        # 4. Content integrity.
         content_b64 = payload.get("content_b64", "")
         try:
             content = base64.b64decode(content_b64, validate=True)
@@ -603,7 +745,7 @@ class Guard:
             self.ledger.append("patch_refused", {"code": "content_hash_mismatch"})
             raise Refusal(400, "content_hash_mismatch", "content does not match content_sha256")
 
-        # 4. Target must be a registered critical path.
+        # 5. Target must be a registered critical path.
         target_path = payload.get("file_path")
         if not isinstance(target_path, str):
             raise Refusal(400, "missing_file_path", "file_path required")
@@ -612,7 +754,7 @@ class Guard:
             self.ledger.append("patch_refused", {"code": "not_protected", "file_path": target_path})
             raise Refusal(403, "not_protected", f"{target_path} is not in protected_paths")
 
-        # 5. This node must be authorized to apply at all.
+        # 6. This node must be authorized to apply at all.
         capabilities = self.authorization_capabilities()
         if "guard-apply" not in capabilities:
             self.ledger.append(
@@ -620,7 +762,7 @@ class Guard:
             )
             raise Refusal(403, "capability_missing", f"guard-apply not granted (have: {capabilities or 'none'})")
 
-        # 6. Dry-run short-circuits after verification: the whole point of
+        # 7. Dry-run short-circuits after verification: the whole point of
         #    --dry-run is to exercise signature, replay, manifest and capability
         #    checks and leave an audit trail without touching the filesystem.
         if self.dry_run:
@@ -635,7 +777,7 @@ class Guard:
                 "audit_block": block["hash"],
             }
 
-        # 7. Arming, then root.
+        # 8. Arming, then root.
         if not self.apply_enabled:
             self.ledger.append(
                 "patch_verified_not_applied", {"code": "unarmed", "file_path": target_path, "sha256": actual}
@@ -689,11 +831,12 @@ def _make_handler(guard: Guard, server_name: str):  # noqa: C901 - HTTP surface 
                     "dry_run": guard.dry_run,
                     "protected_paths": len(guard.protected_paths()),
                     "capabilities": guard.authorization_capabilities(),
+                    "registry_sequence": guard.installed_sequence(),
                 },
             )
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            if self.path != "/api/v1/critical-file/patch":
+            if self.path not in ("/api/v1/critical-file/patch", "/api/v1/registry"):
                 self._send(404, {"error": "not found"})
                 return
             client = self.client_address[0]
@@ -729,8 +872,9 @@ def _make_handler(guard: Guard, server_name: str):  # noqa: C901 - HTTP surface 
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 self._send(400, {"error": str(exc), "code": "malformed_packet"})
                 return
+            handler = guard.handle_registry if self.path == "/api/v1/registry" else guard.handle_patch
             try:
-                self._send(200, guard.handle_patch(packet))
+                self._send(200, handler(packet))
             except Refusal as refusal:
                 self._send(refusal.status, {"error": refusal.detail or refusal.code, "code": refusal.code})
             except Exception as exc:  # pragma: no cover - defensive

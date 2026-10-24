@@ -8,10 +8,16 @@
       "sha256": "c60eeea238ffe0a638a123f2c4c60a9be1d12f14823237c729bd491fb51d0271"
     },
     {
+      "contract": "guard-approval",
+      "file": "guard-approval.json",
+      "schema_version": "1.0",
+      "sha256": "2b7f4f5e656ad17ce5c5494d4b7e3c7beaa76d3f1825d7b0c7dca026bbf534b1"
+    },
+    {
       "contract": "identity-schema",
       "file": "identity-schema.json",
       "schema_version": "1.0",
-      "sha256": "6d5b723d82eaddb8cb6d48522b9425073707670416d7dc0e551eb3b3cecb046f"
+      "sha256": "858df42f32c223dfe00da71c9b4bf1e79ca1cd276c73d0955a0c86d0eec69c9f"
     },
     {
       "contract": "overlay",
@@ -23,13 +29,31 @@
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "14fe5f71e3f692afd8e79d1cc2b467ad95c0b1835adcbf2a4e917d228c82ec86"
+      "sha256": "ebb2b0737b9b46d9000367b366045d34bc478ab29ffce9dabd1a3b81e045f709"
     },
     {
       "contract": "proposal-schema",
       "file": "proposal-schema.json",
       "schema_version": 1,
       "sha256": "223cd6772328658665ab10c6c4448859c02ae8cf4bcecdc30e8e1aa40cf40782"
+    },
+    {
+      "contract": "reflex",
+      "file": "reflex-schema.json",
+      "schema_version": "1.0",
+      "sha256": "747841a94b75415217bb3604cc201230ad55e799b5599d696fa4d68e5808ac9e"
+    },
+    {
+      "contract": "registry-publication",
+      "file": "registry-publication.json",
+      "schema_version": "1.0",
+      "sha256": "51576ee9e7a8b700713c3715d0497b3296d8829464280a80973e34ea4325776a"
+    },
+    {
+      "contract": "registry-schema",
+      "file": "registry-schema.json",
+      "schema_version": "1.0",
+      "sha256": "cf588c1c660ec9575762b987ad0d7ff0e5e2a8b750230d8309237b148af741ee"
     },
     {
       "contract": "tracking-schema",
@@ -229,6 +253,12 @@
       "implementation_state": "spec-only",
       "runtime": "not-listening",
       "service": "vector-embed"
+    },
+    "4224": {
+      "bound_by": "master",
+      "implementation_state": "implemented",
+      "runtime": "not-verifiable-here",
+      "service": "reflex-broker"
     },
     "51820": {
       "bound_by": "both",

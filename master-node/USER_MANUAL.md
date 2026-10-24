@@ -240,8 +240,8 @@ The isolation properties, each with a test behind it in
 - the signer holds **no root** and **no vault path**;
 - the signer **re-derives the canonical bytes itself** and refuses anything
   else — a request is a *typed* registry entry or a guard approval naming one
-  peer, one path, one action, and the signer binds it to the trust root it
-  was started with;
+  peer, one protected path and one piece of content, and the signer binds it to
+  the trust root it was started with;
 - every outcome is appended to the **ledger**;
 - the signer is **not reachable from the admin surface**.
 
@@ -291,11 +291,28 @@ make console ARGS='users <node>'
 make console ARGS='feed --ping'
 ```
 
-### `sparknet-registry-listener.py` — the registry push listener
+### Distributing a registry
 
-Listens for a registry push from the Master and applies it. It is a **stub**
-today: it accepts the shape and validates it, and it is not yet the full
-push path. `tests/test_listener_8090.py` covers the port and the shape.
+The Master **pushes** a signed registry publication to each peer's guard on 9090
+(`POST /api/v1/registry`). Two commands:
+
+```sh
+make registry-publish REGISTRY=manifests/node-authorizations.json OUT=.state/registry
+make registry-deliver PUBLICATION=.state/registry/current.json
+```
+
+`registry-publish` validates the document, refuses one naming another Master's
+key, signs through the isolated signer (or `--offline`), and writes
+`current.json` with a sequence that only increases. `registry-deliver` reads
+each peer's address from the publication itself and pushes it; revoked entries
+are delivered to as well, because the node being revoked has to learn about it.
+A peer that refuses or is offline is recorded, and the command exits non-zero —
+the installed `sparknet-registry-deliver.timer` retries every 60 s.
+
+`sparknet-registry-listener.py` remains as a **superseded** stub for the Step 7
+pull design. It is not part of the registry channel: there is no pull surface,
+and the Master listens on no registry port. `tests/test_listener_8090.py` still
+covers the stub's bind rule until Step 7 is reconciled.
 
 ### `sparknet-killswitch.py` — the KillSwitch
 
@@ -323,7 +340,7 @@ its clocks. Specified and sketched, not finished.
 
 ### 8.1 The scripts
 
-13 scripts, all `bash` with `set -euo pipefail`, all answering `--help` **and
+14 scripts, all `bash` with `set -euo pipefail`, all answering `--help` **and
 changing nothing when they do**.
 
 | Script | Purpose |
@@ -335,9 +352,11 @@ changing nothing when they do**.
 | `sparknet-registry-sign.sh` | Sign a registry entry. |
 | `sparknet-registry-sign-socket.sh` | Sign a registry entry **through the signer socket**, recording a ledger block. |
 | `sparknet-registry-verify.sh` | Verify a registry. |
-| `sparknet-registry-publish.sh` | Publish the registry to the peers. |
+| `sparknet-registry-publish.sh` | Sign+emit a registry **publication** (`<out>/current.json`). |
+| `sparknet-registry-deliver.sh` | Push a signed publication to the peers' guards on 9090. |
 | `sparknet-registry-revoke.sh` | Sign a **revoked** entry for an identity. |
 | `sparknet-approval-issue.sh` | Issue a signed approval for a target and content. |
+| `sparknet-approval-sign-socket.sh` | Sign an approval **through the signer socket**, recording a ledger block. |
 | `sparknet-approval-deliver.sh` | Deliver an approval to a peer. |
 | `sparknet-election-approve.sh` | Install the formed trust root. |
 | `sparknet-killswitch.sh` | The Master KillSwitch, root-gated. |
@@ -347,7 +366,46 @@ The distinction between `sparknet-registry-sign.sh` and
 first signs directly, the second goes **through the signer socket** and
 records a ledger block. In production the second is the one to use — it is
 the path that leaves an audit trail and the path that keeps the key in one
-process.
+process. The same pair exists for approvals
+(`sparknet-approval-issue.sh` / `sparknet-approval-sign-socket.sh`).
+
+### 8.1.1 Issuing a guard approval
+
+`guard-apply` is the one authority a peer cannot grant itself: only the
+Master's key can mint an approval that the peer's guard will apply. The
+envelope is fixed — one peer, one protected path, one piece of content, one
+nonce — and the canonical bytes are produced by one implementation,
+`../shared/sparknet-authz.py::guard_approval_message`, which the signer and
+the peer both call. The narrative contract is
+`../contracts/guard-protocol.md`; the machine-readable one is
+`../contracts/guard-approval.json`.
+
+```
+make approval-issue TARGET=/etc/wireguard/wg1.conf CONTENT=/tmp/wg1.conf \
+     PEER_FINGERPRINT=<sha256 of the peer's canonical identity>
+make approval-sign-socket APPROVAL=<artifact>        # production: signs through the signer
+make approval-deliver FINGERPRINT=<fp> APPROVAL=<artifact>   # POSTs to the peer
+```
+
+Three properties worth knowing before using them:
+
+- **The envelope names the peer.** `peer_fingerprint` is the hash of the
+  peer's canonical identity. A peer refuses an approval addressed to anybody
+  else, so an approval minted for one node cannot be applied by another.
+- **The envelope carries no capabilities.** The peer reads `guard-apply` from
+  its own signed registry entry. An approval that carried its own capability
+  would be able to grant the authority it is checked against.
+- **The nonce is spent.** The Master refuses to issue the same nonce twice
+  (`$SPARKNET_STATE_DIR/approval_nonces.json`), and the peer refuses a
+  replayed `nonce`/`request_id` pair. The approval's window is bounded by the
+  peer's replay policy — 60 seconds by default, so issue and deliver in one
+  breath.
+
+`approval-deliver` resolves the peer's address from the signed registry (the
+fingerprint names the peer; the registry entry names its overlay address) and
+POSTs to `http://10.100.0.x:9090/api/v1/critical-file/patch`. `--url`
+overrides that for a one-off. The record it writes says whether the peer
+accepted, and quotes the peer's own answer.
 
 ### 8.2 The units
 
@@ -518,10 +576,10 @@ The suite:
 | `test_ledger.py` (via `make ledger`) | The hash-chained ledger. |
 | `test_approval.py` | Signed approvals: issue, deliver, verify, refuse. |
 | `test_registry_cli.py`, `test_registry_cli_step3.py` | The registry CLI: sign, verify, revoke. |
-| `test_registry_dist.py` | Registry distribution. |
+| `test_registry_dist.py` | Registry distribution end to end: publish → push → the peer's own guard installs, refuses a tampered artifact and refuses a replay. |
 | `test_admin_console.py` | The admin console. |
 | `test_killswitch.py` | The KillSwitch. |
-| `test_listener_8090.py` | The registry push listener and its port. |
+| `test_listener_8090.py` | The superseded 8090 pull-listener stub and its bind rule. |
 | `test_wg_anchor.py`, `test_wg_render.py` | The overlay anchor and the rendering. |
 | `test_step1_keypair.py` | The three-key generation. |
 | `test_master_scripts.py` | The role's scripts. |
@@ -687,9 +745,11 @@ Broadly, in this role:
 - **Implemented and exercised** — the three-key generation, the isolated
   signer and its socket, the trust-root installation, the election approval
   path, the hash-chained ledger, the parity loader, the registry signing,
-  verification, publication and revocation, the approval issue/deliver path,
-  the admin console, the overlay anchor, the admin surface's capability
-  boundary, the role-scoped agents, the KillSwitch's root gate.
+  verification, publication and revocation, the approval issue/deliver path
+  (exercised against the peer's own guard daemon, loaded by path, so "the two
+  sides agree" is a fact the suite enforces), the admin console, the overlay
+  anchor, the admin surface's capability boundary, the role-scoped agents, the
+  KillSwitch's root gate.
 - **Contracted and scaffolding** — the registry push listener, the nocturnal
   pooling scheduler, share ratification, the cluster KillSwitch's full
   federation behaviour, several master-side ports (`4203`, `4220`–`4223`).
