@@ -67,6 +67,7 @@ KNOWN_CAPABILITIES = frozenset(
         "cluster-dispatch",
         "cluster-serve",
         "admin-supervise",
+        "cross-department-share",
     }
 )
 
@@ -122,7 +123,19 @@ def canonical_bytes(identity: dict[str, Any]) -> bytes:
 #: included deliberately: it means only the Master (holding the private key) can
 #: flip it, so an attacker with registry write access can revoke a node (a safe
 #: false denial) but cannot reinstate one (which would need a fresh signature).
-SIGNED_FIELDS = ("fingerprint", "identity", "capabilities", "overlay_ipv4", "issued_at", "expires_at", "revoked")
+#: `department` is included for the same reason: it decides who may share with
+#: whom, so an unsigned one is a privilege boundary anyone able to edit the
+#: registry file could move.
+SIGNED_FIELDS = (
+    "fingerprint",
+    "identity",
+    "capabilities",
+    "overlay_ipv4",
+    "issued_at",
+    "expires_at",
+    "revoked",
+    "department",
+)
 
 
 def authorization_message(entry: dict[str, Any]) -> bytes:
@@ -131,6 +144,12 @@ def authorization_message(entry: dict[str, Any]) -> bytes:
     Signing only the identity would leave `capabilities` and `overlay_ipv4`
     mutable by anyone who can edit the registry file, which would let them
     escalate a node to guard-apply without the Master ever approving it.
+
+    `department` is always present in the envelope, as null when the Master has
+    attested none. One message shape rather than one-per-optional-field: two
+    canonical forms for the same logical entry is exactly the ambiguity the
+    byte-for-byte agreement rule exists to prevent, and a verifier should never
+    have to guess which form it is looking at.
     """
     try:
         envelope = {
@@ -141,6 +160,7 @@ def authorization_message(entry: dict[str, Any]) -> bytes:
             "issued_at": entry["issued_at"],
             "expires_at": entry["expires_at"],
             "revoked": bool(entry.get("revoked", False)),
+            "department": entry.get("department"),
         }
     except (KeyError, AuthzError, TypeError) as exc:
         raise AuthzError(f"authorization entry is malformed: {exc}") from exc
@@ -425,6 +445,7 @@ def sign_authorization(
     ttl_days: int = 365,
     now: datetime | None = None,
     revoked: bool = False,
+    department: str | None = None,
 ) -> dict[str, Any]:
     """Build a signed registry entry. MASTER-SIDE ONLY — needs the Master private key.
 
@@ -435,6 +456,13 @@ def sign_authorization(
     because ``revoked`` is *inside* the signed envelope: flipping it after
     signing produces an entry whose signature no longer verifies. Revoking is
     an act of the key, so it happens here, under the signature.
+
+    ``department`` is a parameter for exactly the same reason. It is inside the
+    envelope because it decides who may share with whom, so an entry's department
+    cannot be edited afterwards without invalidating the signature — attesting one
+    is an act of the Master's key, never a field a registry editor fills in. It is
+    always emitted, as null when the Master attests none, so there is one entry
+    shape rather than two for a verifier to distinguish.
     """
     now = now or datetime.now(timezone.utc)
     unknown = [c for c in capabilities if c not in KNOWN_CAPABILITIES]
@@ -450,6 +478,7 @@ def sign_authorization(
         "issued_at": stamp,
         "expires_at": (now + timedelta(days=ttl_days)).isoformat().replace("+00:00", "Z"),
         "revoked": bool(revoked),
+        "department": department,
     }
     entry["signature_b64"] = base64.b64encode(master_private_key.sign(authorization_message(entry))).decode("ascii")
     return entry
