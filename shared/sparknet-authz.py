@@ -37,6 +37,7 @@ import contextlib
 import hashlib
 import json
 import re
+import secrets
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -516,6 +517,7 @@ GUARD_APPROVAL_FIELDS = (
     "file_path",
     "issued_at",
     "nonce",
+    "operator_os",
     "peer_fingerprint",
     "request_id",
 )
@@ -906,12 +908,66 @@ GRANT_FIELDS = (
     "expires_at",
     "nonce",
     "parent_grant_id",
+    "operator_os",
 )
 
+#: The OS identity of the human operating the session, attested when the grant is
+#: minted. Inside the signed projection because it *caps* what the agent may do:
+#: an unsigned one could be widened by whoever presents the grant, which is
+#: precisely the privilege the field exists to deny. It is deliberately not the
+#: uid of the daemon serving the request — a bridge running as root would then
+#: hand every session root, and the cap would be a property of how the node was
+#: started rather than of who is driving it.
+OPERATOR_OS_FIELDS = ("uid", "euid", "username", "groups", "is_root")
+
+
+def normalise_operator_os(value: Any) -> dict[str, Any] | None:
+    """Canonicalise an attested OS identity, or None when none was attested.
+
+    Strict rather than coercive: the canonical bytes a signature covers must not
+    depend on how a caller happened to shape the input, so a wrong type is refused
+    instead of silently converted. ``groups`` is sorted and de-duplicated for the
+    same reason a grant's capabilities are — two orderings of one set must not
+    produce two signatures.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AuthzError("operator_os must be an object or null")
+    unknown = sorted(set(value) - set(OPERATOR_OS_FIELDS))
+    if unknown:
+        raise AuthzError(f"operator_os has undeclared field(s): {', '.join(unknown)}")
+    missing = [name for name in OPERATOR_OS_FIELDS if name not in value]
+    if missing:
+        raise AuthzError(f"operator_os missing field(s): {', '.join(missing)}")
+    for name in ("uid", "euid"):
+        # bool is an int subclass in Python, so True would otherwise pass as uid 1.
+        if isinstance(value[name], bool) or not isinstance(value[name], int):
+            raise AuthzError(f"operator_os.{name} must be an integer")
+        if value[name] < 0:
+            raise AuthzError(f"operator_os.{name} must not be negative")
+    if not isinstance(value["username"], str) or not value["username"]:
+        raise AuthzError("operator_os.username must be a non-empty string")
+    groups = value["groups"]
+    if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+        raise AuthzError("operator_os.groups must be a list of strings")
+    if not isinstance(value["is_root"], bool):
+        raise AuthzError("operator_os.is_root must be a boolean")
+    return {
+        "uid": value["uid"],
+        "euid": value["euid"],
+        "username": value["username"],
+        "groups": sorted(set(groups)),
+        "is_root": value["is_root"],
+    }
+
+
 #: Fields a grant must carry non-empty before it can be canonicalised. The
-#: remaining GRANT_FIELDS (`overlay_ipv4`, `vault_scope`, `parent_grant_id`)
-#: may legitimately be empty, so they are projected as null/empty rather than
-#: required — empty `vault_scope` is the meaningful "node-level config only".
+#: remaining GRANT_FIELDS (`overlay_ipv4`, `vault_scope`, `parent_grant_id`,
+#: `operator_os`) may legitimately be empty, so they are projected as null/empty
+#: rather than required — empty `vault_scope` is the meaningful "node-level config
+#: only", and a null `operator_os` is the meaningful "no OS identity attested",
+#: which caps the session at nothing rather than pretending to know it.
 GRANT_REQUIRED = (
     "grant_id",
     "node_id",
@@ -932,6 +988,113 @@ REASON_GRANT_NOT_YET_VALID = "grant_not_yet_valid"
 REASON_GRANT_NONCE_REUSED = "grant_nonce_reused"
 REASON_GRANT_NODE_MISMATCH = "grant_node_mismatch"
 REASON_GRANT_MALFORMED = "grant_malformed"
+
+#: Refusal reasons for the operator-OS ceiling. Kept beside the grant reasons
+#: because the check reads a grant field, and a caller that maps reasons to HTTP
+#: statuses should not have to import them from two places.
+REASON_OPERATOR_UNATTESTED = "operator_unattested"
+REASON_OPERATOR_INSUFFICIENT = "operator_insufficient"
+REASON_OPERATOR_MALFORMED = "operator_malformed"
+
+
+def operator_os_authorises(grant: dict[str, Any], *, requires_root: bool) -> tuple[bool, str]:
+    """Whether the grant's attested operator identity permits a privileged mutation.
+
+    Returns ``(allowed, reason)``; ``reason`` is empty when allowed. Never raises,
+    so a caller cannot turn a missing attestation into an unhandled error and
+    thereby into a fail-open path.
+
+    **The attestation authorises.** A grant minter is trusted — minting is
+    master-side or an offline operator act, and `operator_os` is inside the
+    signature — so an attested ``is_root: true`` permits what root may do even when
+    the process serving the request runs as somebody else. That is the whole point
+    of putting the ceiling in the grant: it travels with the human rather than with
+    the daemon, so how the node happened to be started cannot widen a session.
+
+    Two things this deliberately does not do:
+
+    - It never reads the serving process's own uid. Doing so would let a bridge or
+      WebUI container started as root hand every session root.
+    - It never treats an absent attestation as permissive. ``operator_os: null``
+      means nobody vouched for this session's OS identity, so a privileged mutation
+      is refused rather than allowed on the strength of silence.
+
+    A non-privileged operation is always allowed: the ceiling binds what needs
+    privilege, and requiring an attestation for an ordinary vault write would make
+    the field a precondition of using the node at all.
+    """
+    if not requires_root:
+        return True, ""
+    if not isinstance(grant, dict):
+        return False, REASON_GRANT_MALFORMED
+    attested = grant.get("operator_os")
+    if not isinstance(attested, dict):
+        return False, REASON_OPERATOR_UNATTESTED
+    # is_root is a recorded boolean, never inferred from uid == 0: the two can
+    # disagree, and a disagreement is exactly what an enforcement check must not
+    # guess about.
+    if attested.get("is_root") is True:
+        return True, ""
+    return False, REASON_OPERATOR_INSUFFICIENT
+
+
+def encode_operator_os(attested: dict[str, Any] | None) -> str:
+    """Canonical-JSON encoding of an OS attestation, for a string-only envelope.
+
+    ``guard_approval_message`` requires every projected field to be a string, so
+    the attestation rides a guard approval *encoded* rather than nested. That is a
+    feature rather than a workaround: a nested object would need its own
+    canonicalisation, and the all-strings rule exists so no caller has to think
+    about one.
+
+    Empty means unattested, and that is a **value** here rather than an omission —
+    the field must be present in the envelope, and present-but-empty is how this
+    envelope already says "legitimately none" for ``content_b64``.
+    """
+    normalised = normalise_operator_os(attested)
+    if normalised is None:
+        return ""
+    return json.dumps(normalised, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def decode_operator_os(value: Any) -> dict[str, Any] | None:
+    """The inverse of :func:`encode_operator_os`. Strict, because it feeds a decision.
+
+    A malformed encoding is refused rather than read as "no attestation". Both
+    directions fail closed here — unattested already refuses a privileged mutation
+    — but a corrupt encoding that quietly became "none" would be indistinguishable
+    in an audit from an approval that never carried one, and the difference is
+    whether the Master attested a root operator and the record was lost.
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise AuthzError("operator_os must be a canonical-JSON string or empty")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AuthzError(f"operator_os is not valid JSON: {exc}") from exc
+    return normalise_operator_os(parsed)
+
+
+def guard_approval_operator_allows(approval: Any, *, requires_root: bool) -> tuple[bool, str]:
+    """The operator-OS ceiling for one guard approval.
+
+    One call for the guard's apply path, so the enforcement point cannot invent a
+    second rule: this decodes the envelope's attestation and delegates the decision
+    to :func:`operator_os_authorises`, which is the same rule a grant-presenting
+    path uses. Two rules for one ceiling would eventually disagree, and the
+    disagreement would be visible only as a mutation that one path allowed.
+    """
+    if not requires_root:
+        return True, ""
+    if not isinstance(approval, dict):
+        return False, REASON_OPERATOR_MALFORMED
+    try:
+        attested = decode_operator_os(approval.get("operator_os"))
+    except AuthzError:
+        return False, REASON_OPERATOR_MALFORMED
+    return operator_os_authorises({"operator_os": attested}, requires_root=True)
 
 
 def grant_message(grant: dict[str, Any]) -> bytes:
@@ -971,6 +1134,7 @@ def mint_grant(
     nonce: str,
     master_private_key: Ed25519PrivateKey,
     parent_grant_id: str | None = None,
+    operator_os: dict[str, Any] | None = None,
     registry: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1033,6 +1197,7 @@ def mint_grant(
         "expires_at": (now + timedelta(minutes=ttl_minutes)).isoformat().replace("+00:00", "Z"),
         "nonce": nonce,
         "parent_grant_id": parent_grant_id,
+        "operator_os": normalise_operator_os(operator_os),
     }
     grant["signature_b64"] = sign_bytes(master_private_key, grant_message(grant))
     return grant
@@ -1138,6 +1303,626 @@ def verify_grant(
         overlay_ipv4=grant.get("overlay_ipv4") or stored.get("overlay_ipv4"),
         identity=stored,
     )
+
+
+# --- share ratification (Master arbitrates a share) ---------------------------
+
+#: The signed share-ratification artifact. It is deliberately narrow: it records
+#: the Master's answer to one accepted share, not a permission and not a trust
+#: level. The flag is retained on both approval and refusal because the fact that
+#: unapproved data crossed nodes does not disappear when the share is approved.
+SHARE_RATIFICATION_FIELDS = (
+    "schema_version",
+    "share_id",
+    "node_id",
+    "node_fingerprint",
+    "grant_id",
+    "decision",
+    "reason",
+    "accepted_at",
+    "deadline",
+    "ratified_at",
+    "flag_retained",
+)
+SHARE_RATIFICATION_SCHEMA = "1.0"
+SHARE_RATIFICATION_DECISIONS = ("ratified", "refused")
+
+
+def share_ratification_message(ratification: dict[str, Any]) -> bytes:
+    """Canonical bytes the Master's signature over a share ratification covers.
+
+    Closed like the guard approval: an extra field is refused rather than left
+    outside the signature. The field list is the contract; a second copy in the
+    signer or the peer would be the divergence class this module exists to stop.
+    """
+    if not isinstance(ratification, dict):
+        raise AuthzError("share ratification must be an object")
+    extra = set(ratification) - set(SHARE_RATIFICATION_FIELDS) - {"signature_b64"}
+    if extra:
+        raise AuthzError(f"share ratification carries unsigned field(s): {', '.join(sorted(extra))}")
+    missing = [f for f in SHARE_RATIFICATION_FIELDS if f not in ratification]
+    if missing:
+        raise AuthzError(f"share ratification missing required field(s): {', '.join(missing)}")
+    if ratification["schema_version"] != SHARE_RATIFICATION_SCHEMA:
+        raise AuthzError(f"share ratification schema_version must be {SHARE_RATIFICATION_SCHEMA}")
+    for name in ("share_id", "node_id", "grant_id", "accepted_at", "deadline", "ratified_at"):
+        value = ratification.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise AuthzError(f"share ratification {name} must be a non-empty string")
+    fingerprint_hex = ratification.get("node_fingerprint")
+    if not isinstance(fingerprint_hex, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint_hex):
+        raise AuthzError("share ratification node_fingerprint must be 64 lowercase hex characters")
+    if ratification.get("decision") not in SHARE_RATIFICATION_DECISIONS:
+        raise AuthzError(f"share ratification decision must be one of {SHARE_RATIFICATION_DECISIONS}")
+    if not isinstance(ratification.get("reason"), str):
+        raise AuthzError("share ratification reason must be a string")
+    if ratification.get("flag_retained") is not True:
+        raise AuthzError("share ratification must retain the flag")
+    projected = {field: ratification[field] for field in SHARE_RATIFICATION_FIELDS}
+    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_share_ratification(ratification: dict[str, Any], master_private_key: Ed25519PrivateKey) -> dict[str, Any]:
+    """Sign one share ratification. MASTER-SIDE ONLY."""
+    unsigned = {key: value for key, value in ratification.items() if key != "signature_b64"}
+    message = share_ratification_message(unsigned)
+    return {**unsigned, "signature_b64": sign_bytes(master_private_key, message)}
+
+
+def verify_share_ratification(ratification: dict[str, Any], master_public_key: Ed25519PublicKey) -> bool:
+    """Verify the Master's ratification signature; refuse on any shape error."""
+    if not isinstance(ratification, dict):
+        return False
+    signature = ratification.get("signature_b64")
+    if not isinstance(signature, str) or not signature:
+        return False
+    try:
+        message = share_ratification_message(ratification)
+    except AuthzError:
+        return False
+    return verify_signature(master_public_key, signature, message)
+
+
+# --- trust transitions (a belief, never a permission) -------------------------
+
+#: Trust levels are beliefs, not grants. This signed artifact records a Master
+#: decision about one node; it does not move a capability or a registry entry.
+TRUST_LEVELS = ("authenticated", "unauthenticated", "flagged")
+TRUST_TRANSITION_FIELDS = (
+    "schema_version",
+    "node_id",
+    "level",
+    "previous_level",
+    "reason",
+    "decided_at",
+    "reversible",
+    "flag_preserved",
+)
+TRUST_TRANSITION_SCHEMA = "1.0"
+
+
+def trust_transition_message(transition: dict[str, Any]) -> bytes:
+    """Canonical bytes a Master trust-transition signature covers."""
+    if not isinstance(transition, dict):
+        raise AuthzError("trust transition must be an object")
+    extra = set(transition) - set(TRUST_TRANSITION_FIELDS) - {"signature_b64"}
+    if extra:
+        raise AuthzError(f"trust transition carries unsigned field(s): {', '.join(sorted(extra))}")
+    missing = [f for f in TRUST_TRANSITION_FIELDS if f not in transition]
+    if missing:
+        raise AuthzError(f"trust transition missing required field(s): {', '.join(missing)}")
+    if transition["schema_version"] != TRUST_TRANSITION_SCHEMA:
+        raise AuthzError(f"trust transition schema_version must be {TRUST_TRANSITION_SCHEMA}")
+    if transition.get("level") not in TRUST_LEVELS:
+        raise AuthzError(f"trust transition level must be one of {TRUST_LEVELS}")
+    previous = transition.get("previous_level")
+    if previous is not None and previous not in TRUST_LEVELS:
+        raise AuthzError(f"trust transition previous_level must be one of {TRUST_LEVELS} or null")
+    for name in ("node_id", "reason", "decided_at"):
+        value = transition.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise AuthzError(f"trust transition {name} must be a non-empty string")
+    if transition.get("reversible") is not True:
+        raise AuthzError("trust transition must be reversible")
+    if transition.get("flag_preserved") is not True:
+        raise AuthzError("trust transition must preserve the flag")
+    projected = {field: transition[field] for field in TRUST_TRANSITION_FIELDS}
+    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_trust_transition(transition: dict[str, Any], master_private_key: Ed25519PrivateKey) -> dict[str, Any]:
+    """Sign one trust transition. MASTER-SIDE ONLY."""
+    unsigned = {key: value for key, value in transition.items() if key != "signature_b64"}
+    message = trust_transition_message(unsigned)
+    return {**unsigned, "signature_b64": sign_bytes(master_private_key, message)}
+
+
+def verify_trust_transition(transition: dict[str, Any], master_public_key: Ed25519PublicKey) -> bool:
+    """Verify a Master trust-transition signature; refuse on any shape error."""
+    if not isinstance(transition, dict):
+        return False
+    signature = transition.get("signature_b64")
+    if not isinstance(signature, str) or not signature:
+        return False
+    try:
+        message = trust_transition_message(transition)
+    except AuthzError:
+        return False
+    return verify_signature(master_public_key, signature, message)
+
+
+# --- RFI answers (request for information) ------------------------------------
+
+#: The whole RFI answer artifact. `content_b64` is in the field list but not in the
+#: signed projection: the content is bound by `content_sha256` instead, so an answer
+#: can be large without the projection having to carry it.
+RFI_ANSWER_FIELDS = (
+    "answered_at",
+    "content_b64",
+    "content_sha256",
+    "item_name",
+    "peer_fingerprint",
+    "request_id",
+)
+
+#: What the Master's signature covers.
+RFI_ANSWER_SIGNED_FIELDS = (
+    "answered_at",
+    "content_sha256",
+    "item_name",
+    "peer_fingerprint",
+    "request_id",
+)
+
+#: Fields that must be present and non-empty. `content_b64` is deliberately absent:
+#: an empty answer is a legitimate one ("nothing found"), and refusing it would push
+#: a Master toward inventing content to fill the field.
+RFI_ANSWER_REQUIRED = (
+    "answered_at",
+    "content_sha256",
+    "item_name",
+    "peer_fingerprint",
+    "request_id",
+)
+
+#: Refusal reasons, named by contracts/rfi-schema.json `refusals`. Fixed strings:
+#: a caller maps them to an HTTP status and an operator greps a ledger for them, so
+#: neither may vary with the artifact that was refused.
+REASON_RFI_MALFORMED = "malformed"
+REASON_RFI_EXTRA_FIELDS = "extra_fields"
+REASON_RFI_MISSING_FIELDS = "missing_fields"
+REASON_RFI_BAD_SIGNATURE = "bad_signature"
+REASON_RFI_DIGEST_MISMATCH = "digest_mismatch"
+REASON_RFI_WRONG_PEER = "wrong_peer"
+REASON_RFI_UNSAFE_ITEM_NAME = "unsafe_item_name"
+REASON_RFI_EXPIRED = "expired"
+REASON_RFI_DUPLICATE = "duplicate_answer"
+
+
+def check_rfi_item_name(name: Any) -> str:
+    """A single safe path component under ``01_Inbox/``, or a refusal.
+
+    The answer is *written* to this name, so the check is a path-traversal guard
+    and not a style preference. A separator, a parent reference or a leading dot
+    would let the destination be chosen by whoever composed the name — which is why
+    `item_name` is inside the signed projection rather than beside it.
+    """
+    if not isinstance(name, str) or not name:
+        raise AuthzError("item_name must be a non-empty string")
+    if "/" in name or "\\" in name or name in (".", "..") or ".." in name or name.startswith("."):
+        raise AuthzError(f"item_name must be a single safe path component, got {name!r}")
+    return name
+
+
+def rfi_answer_message(answer: dict[str, Any]) -> bytes:
+    """Canonical bytes an RFI answer's signature covers.
+
+    The same anti-drift rule as every other envelope here: one projection function,
+    imported by the signer and by every verifier, strict in both directions. A
+    missing field would authorise an answer with no named destination; an extra one
+    would be unsigned data riding inside an artifact that a peer treats as
+    authoritative.
+
+    `signature_b64` travels beside the projection in the same artifact, so it is
+    permitted on the dict without being part of what is signed.
+    """
+    if not isinstance(answer, dict):
+        raise AuthzError("rfi answer must be an object")
+    missing = [f for f in RFI_ANSWER_REQUIRED if not answer.get(f)]
+    if missing:
+        raise AuthzError(f"rfi answer missing required field(s): {', '.join(missing)}")
+    absent = [f for f in RFI_ANSWER_FIELDS if f not in answer]
+    if absent:
+        raise AuthzError(f"rfi answer missing field(s): {', '.join(absent)}")
+    extra = sorted(set(answer) - set(RFI_ANSWER_FIELDS) - {"signature_b64"})
+    if extra:
+        raise AuthzError(f"rfi answer carries field(s) outside the canonical envelope: {', '.join(extra)}")
+    check_rfi_item_name(answer["item_name"])
+    projected = {name: answer[name] for name in sorted(RFI_ANSWER_SIGNED_FIELDS)}
+    for name, value in projected.items():
+        if not isinstance(value, str):
+            raise AuthzError(f"rfi answer field {name!r} must be a string")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def sign_rfi_answer(
+    *,
+    content: bytes,
+    item_name: str,
+    peer_fingerprint: str,
+    request_id: str,
+    master_private_key: Ed25519PrivateKey,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a signed RFI answer. MASTER-SIDE ONLY — needs the Master private key.
+
+    The peer never calls this, and a peer that could would be able to write
+    attributed material into its own inbox, which is the one thing the channel
+    exists to prevent.
+    """
+    if not isinstance(content, bytes):
+        raise AuthzError("content must be bytes")
+    if not peer_fingerprint or not request_id:
+        raise AuthzError("peer_fingerprint and request_id are both required")
+    check_rfi_item_name(item_name)
+    moment = now or datetime.now(timezone.utc)
+    answer: dict[str, Any] = {
+        "answered_at": moment.isoformat().replace("+00:00", "Z"),
+        "content_b64": base64.b64encode(content).decode("ascii"),
+        "content_sha256": hashlib.sha256(content).hexdigest(),
+        "item_name": item_name,
+        "peer_fingerprint": peer_fingerprint,
+        "request_id": request_id,
+    }
+    answer["signature_b64"] = base64.b64encode(master_private_key.sign(rfi_answer_message(answer))).decode("ascii")
+    return answer
+
+
+def verify_rfi_answer(
+    answer: Any,
+    *,
+    master_public_key: Ed25519PublicKey,
+    peer_fingerprint: str,
+    now: datetime | None = None,
+    ttl_seconds: int = 3600,
+    installed_request_ids: Any = (),
+) -> tuple[bool, str, bytes]:
+    """Verify one RFI answer. Returns ``(ok, reason, content)``.
+
+    Never raises for a refused answer: a caller that had to catch exceptions to
+    refuse would eventually catch one too few, and the refusal vocabulary is the
+    point of the check. ``content`` is empty unless ``ok``.
+
+    The order matters and is the one `contracts/rfi-schema.json` states. The
+    signature is checked before the digest because a digest mismatch on an unsigned
+    artifact is not a fact about the Master; the peer is checked before the item
+    name because an answer addressed to another node should be refused as such
+    rather than as badly named.
+    """
+    if not isinstance(answer, dict):
+        return False, REASON_RFI_MALFORMED, b""
+    extra = sorted(set(answer) - set(RFI_ANSWER_FIELDS) - {"signature_b64"})
+    if extra:
+        return False, REASON_RFI_EXTRA_FIELDS, b""
+    absent = [f for f in RFI_ANSWER_FIELDS if f not in answer]
+    if absent:
+        return False, REASON_RFI_MISSING_FIELDS, b""
+
+    signature_b64 = answer.get("signature_b64")
+    if not isinstance(signature_b64, str) or not signature_b64:
+        return False, REASON_RFI_BAD_SIGNATURE, b""
+    try:
+        message = rfi_answer_message(answer)
+    except AuthzError:
+        return False, REASON_RFI_MALFORMED, b""
+    try:
+        if not verify_signature(master_public_key, signature_b64, message):
+            return False, REASON_RFI_BAD_SIGNATURE, b""
+    except AuthzError:
+        return False, REASON_RFI_BAD_SIGNATURE, b""
+
+    try:
+        content = decode_b64_strict(str(answer.get("content_b64") or ""), what="rfi answer content")
+    except AuthzError:
+        return False, REASON_RFI_MALFORMED, b""
+    if hashlib.sha256(content).hexdigest() != answer["content_sha256"]:
+        return False, REASON_RFI_DIGEST_MISMATCH, b""
+
+    if answer["peer_fingerprint"] != peer_fingerprint:
+        return False, REASON_RFI_WRONG_PEER, b""
+    try:
+        check_rfi_item_name(answer["item_name"])
+    except AuthzError:
+        return False, REASON_RFI_UNSAFE_ITEM_NAME, b""
+
+    try:
+        answered = datetime.fromisoformat(str(answer["answered_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False, REASON_RFI_EXPIRED, b""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    age = (moment - answered).total_seconds()
+    if age > ttl_seconds or age < -ttl_seconds:
+        return False, REASON_RFI_EXPIRED, b""
+
+    if answer["request_id"] in set(installed_request_ids or ()):
+        return False, REASON_RFI_DUPLICATE, b""
+    return True, "", content
+
+
+# --- RFI requests (peer -> Master, overlay-attributed) --------------------------
+#
+# A request is NOT signed, unlike every other envelope here. See
+# RFI_REQUEST_DESIGN.md (fabric Step 68A): nothing in the fabric binds a peer
+# fingerprint to a node *signing* public key (the identity carries a Curve25519
+# WireGuard key, which cannot verify an Ed25519 signature), so the Master has no
+# attested key to check a request signature against. Attribution rides the
+# authenticated overlay instead — the Master derives the sender's fingerprint from
+# the WireGuard source address via its own registry and refuses a body whose
+# `peer_fingerprint` disagrees. A signature it could not verify would be theatre.
+
+#: The whole RFI request body. `scope` may be empty (a request that may draw on
+#: nothing still parses; the Master answers "nothing found"), so it is type-checked
+#: rather than required non-empty.
+RFI_REQUEST_FIELDS = (
+    "expires_at",
+    "issued_at",
+    "nonce",
+    "peer_fingerprint",
+    "question",
+    "request_id",
+    "scope",
+)
+
+#: Fields that must be present and non-empty strings.
+RFI_REQUEST_REQUIRED = (
+    "expires_at",
+    "issued_at",
+    "nonce",
+    "peer_fingerprint",
+    "question",
+    "request_id",
+)
+
+#: Refusal reasons for a request. Fixed strings, like the answer's: a caller maps
+#: them to an HTTP status and an operator greps a log for them, so neither may vary
+#: with the artifact that was refused.
+REASON_RFI_REQ_MALFORMED = "malformed"
+REASON_RFI_REQ_WRONG_PEER = "wrong_peer"
+REASON_RFI_REQ_EXPIRED = "expired"
+REASON_RFI_REQ_NOT_YET_VALID = "not_yet_valid"
+REASON_RFI_REQ_REPLAYED = "replayed_nonce"
+
+
+def build_rfi_request(
+    *,
+    request_id: str,
+    peer_fingerprint: str,
+    question: str,
+    scope: list[str] | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = 300,
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    """Build an RFI request body (unsigned — see the section note above).
+
+    The peer sends this to the Master's overlay-only request listener. ``nonce``
+    plus ``expires_at`` are the replay guard that a signed envelope's freshness
+    fields would otherwise provide; ``scope`` is sorted+deduplicated so two
+    orderings of one allow-list cannot produce two different requests.
+    """
+    if not request_id or not peer_fingerprint:
+        raise AuthzError("request_id and peer_fingerprint are both required")
+    if not isinstance(question, str) or not question.strip():
+        raise AuthzError("question must be a non-empty string")
+    if scope is not None and (not isinstance(scope, list) or any(not isinstance(s, str) for s in scope)):
+        raise AuthzError("scope must be a list of vault-category strings")
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return {
+        "request_id": str(request_id),
+        "peer_fingerprint": str(peer_fingerprint),
+        "question": question,
+        "scope": sorted(set(scope or [])),
+        "issued_at": moment.isoformat().replace("+00:00", "Z"),
+        "expires_at": (moment + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z"),
+        "nonce": nonce or secrets.token_hex(16),
+    }
+
+
+def verify_rfi_request(
+    request: Any,
+    *,
+    expected_fingerprint: str,
+    now: datetime | None = None,
+    seen_nonces: Any = (),
+    max_skew_seconds: int = 300,
+) -> tuple[bool, str]:
+    """Validate one RFI request and match it to the overlay-derived fingerprint.
+
+    Returns ``(ok, reason)`` and never raises — a caller that had to catch to refuse
+    would eventually catch one too few. This is **not** a signature check; there is
+    no signature. ``expected_fingerprint`` is the fingerprint the Master derived
+    from the WireGuard-authenticated source address (its registry maps
+    ``overlay_ipv4 -> fingerprint``); a request whose ``peer_fingerprint`` field
+    disagrees is refused as ``wrong_peer``, so a peer cannot ask as another peer.
+
+    The order is the contract's: shape, then attribution, then freshness, then
+    replay. Attribution precedes expiry because *who* is asking is the more
+    specific fact, and a stale request from the right peer is a different refusal
+    than a fresh one from an impostor.
+    """
+    if not isinstance(request, dict):
+        return False, REASON_RFI_REQ_MALFORMED
+    if set(request) != set(RFI_REQUEST_FIELDS):
+        return False, REASON_RFI_REQ_MALFORMED
+    for field_name in RFI_REQUEST_REQUIRED:
+        value = request.get(field_name)
+        if not isinstance(value, str) or not value:
+            return False, REASON_RFI_REQ_MALFORMED
+    scope = request.get("scope")
+    if not isinstance(scope, list) or any(not isinstance(s, str) for s in scope):
+        return False, REASON_RFI_REQ_MALFORMED
+
+    if request["peer_fingerprint"] != expected_fingerprint:
+        return False, REASON_RFI_REQ_WRONG_PEER
+
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        issued = datetime.fromisoformat(str(request["issued_at"]).replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(str(request["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False, REASON_RFI_REQ_EXPIRED
+    if issued.tzinfo is None:
+        issued = issued.replace(tzinfo=timezone.utc)
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= moment:
+        return False, REASON_RFI_REQ_EXPIRED
+    if (issued - moment).total_seconds() > max_skew_seconds:
+        return False, REASON_RFI_REQ_NOT_YET_VALID
+
+    if request["nonce"] in set(seen_nonces or ()):
+        return False, REASON_RFI_REQ_REPLAYED
+    return True, ""
+
+
+# --- telemetry reports (peer -> Master observability, overlay-attributed) -------
+#
+# Phase 4 is Master observability WITHOUT touching the data path: peers push signed
+# evidence, the Master never intercepts. A report is attributed by the authenticated
+# overlay exactly like an RFI request (see MASTER_OBSERVABILITY_DESIGN.md and
+# RFI_REQUEST_DESIGN.md, Step 68A) — the Master derives the sender's fingerprint from
+# the WireGuard source via its registry, so there is no node-key signature and no
+# sign_telemetry_report. Telemetry carries NO authority: it informs, records, surfaces
+# and flags; it never grants, revokes, escalates, widens or approves.
+
+#: The whole telemetry report body.
+TELEMETRY_REPORT_FIELDS = (
+    "expires_at",
+    "issued_at",
+    "kind",
+    "nonce",
+    "payload",
+    "peer_fingerprint",
+)
+
+#: Fields that must be present and non-empty strings. `payload` is checked separately
+#: (it is an object, and an empty object is legitimate).
+TELEMETRY_REPORT_REQUIRED = (
+    "expires_at",
+    "issued_at",
+    "kind",
+    "nonce",
+    "peer_fingerprint",
+)
+
+#: A closed vocabulary. `kind` routes the report to what records it; the per-kind
+#: payload's meaning is the consumer sub-step's contract, not the envelope's, so a new
+#: kind's internals never reshape the envelope.
+TELEMETRY_KINDS = ("status", "metrics", "liveness", "checkpoint_anchor", "inbox_alert")
+
+#: Refusal reasons, named by contracts/telemetry-schema.json `refusals`. Fixed strings,
+#: like every other envelope's: a caller maps them to an HTTP status and an operator
+#: greps a log for them. `off_overlay` is the listener's source gate, not a return here.
+REASON_TELEMETRY_MALFORMED = "malformed"
+REASON_TELEMETRY_WRONG_PEER = "wrong_peer"
+REASON_TELEMETRY_EXPIRED = "expired"
+REASON_TELEMETRY_NOT_YET_VALID = "not_yet_valid"
+REASON_TELEMETRY_REPLAYED = "replayed_nonce"
+
+
+def build_telemetry_report(
+    *,
+    kind: str,
+    peer_fingerprint: str,
+    payload: dict[str, Any] | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = 120,
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    """Build a telemetry report body (unsigned — see the section note above).
+
+    The peer pushes this to the Master's intake listener. ``payload`` is opaque to the
+    envelope (any JSON object; empty is legitimate — a heartbeat says "alive" with no
+    content). ``nonce`` plus ``expires_at`` are the replay/freshness guard.
+    """
+    if kind not in TELEMETRY_KINDS:
+        raise AuthzError(f"kind must be one of {TELEMETRY_KINDS}, got {kind!r}")
+    if not peer_fingerprint:
+        raise AuthzError("peer_fingerprint is required")
+    if payload is not None and not isinstance(payload, dict):
+        raise AuthzError("payload must be a JSON object")
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return {
+        "kind": str(kind),
+        "peer_fingerprint": str(peer_fingerprint),
+        "payload": dict(payload or {}),
+        "issued_at": moment.isoformat().replace("+00:00", "Z"),
+        "expires_at": (moment + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z"),
+        "nonce": nonce or secrets.token_hex(16),
+    }
+
+
+def verify_telemetry_report(
+    report: Any,
+    *,
+    expected_fingerprint: str,
+    now: datetime | None = None,
+    seen_nonces: Any = (),
+    max_skew_seconds: int = 300,
+) -> tuple[bool, str]:
+    """Validate one telemetry report and match it to the overlay-derived fingerprint.
+
+    Returns ``(ok, reason)`` and never raises. This is **not** a signature check; there
+    is no signature. ``expected_fingerprint`` is the fingerprint the Master derived from
+    the WireGuard-authenticated source address; a report whose ``peer_fingerprint``
+    disagrees is refused as ``wrong_peer``, so a peer cannot report as another peer.
+    The order is shape, then attribution, then freshness, then replay — the same order
+    the RFI request uses, so *who* is asking is answered before *whether it is stale*.
+    """
+    if not isinstance(report, dict):
+        return False, REASON_TELEMETRY_MALFORMED
+    if set(report) != set(TELEMETRY_REPORT_FIELDS):
+        return False, REASON_TELEMETRY_MALFORMED
+    for field_name in TELEMETRY_REPORT_REQUIRED:
+        value = report.get(field_name)
+        if not isinstance(value, str) or not value:
+            return False, REASON_TELEMETRY_MALFORMED
+    if report["kind"] not in TELEMETRY_KINDS:
+        return False, REASON_TELEMETRY_MALFORMED
+    if not isinstance(report.get("payload"), dict):
+        return False, REASON_TELEMETRY_MALFORMED
+
+    if report["peer_fingerprint"] != expected_fingerprint:
+        return False, REASON_TELEMETRY_WRONG_PEER
+
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        issued = datetime.fromisoformat(str(report["issued_at"]).replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(str(report["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False, REASON_TELEMETRY_EXPIRED
+    if issued.tzinfo is None:
+        issued = issued.replace(tzinfo=timezone.utc)
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= moment:
+        return False, REASON_TELEMETRY_EXPIRED
+    if (issued - moment).total_seconds() > max_skew_seconds:
+        return False, REASON_TELEMETRY_NOT_YET_VALID
+
+    if report["nonce"] in set(seen_nonces or ()):
+        return False, REASON_TELEMETRY_REPLAYED
+    return True, ""
 
 
 # --- CLI ---------------------------------------------------------------------

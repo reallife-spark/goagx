@@ -147,6 +147,26 @@ def _own_fingerprint(vault: Path = VAULT_ROOT) -> str:
     return authz.fingerprint(identity)
 
 
+def _operator_os(*, is_root: bool = True) -> str:
+    """An encoded operator-OS attestation, produced by the shared codec.
+
+    Encoded rather than hand-written JSON: the guard decodes strictly, so a test
+    that spelled the canonical form itself would keep passing after the encoding
+    changed and would have stopped describing what a real approval looks like.
+    """
+    authz = guardmod._load_authz_module()
+    uid = 0 if is_root else 1000
+    return authz.encode_operator_os(
+        {
+            "uid": uid,
+            "euid": uid,
+            "username": "root" if is_root else "operator",
+            "groups": ["root"] if is_root else ["users"],
+            "is_root": is_root,
+        }
+    )
+
+
 def _payload(
     *,
     file_path: str = PROTECTED_TARGET,
@@ -156,8 +176,15 @@ def _payload(
     request_id: str = "r1",
     issued_delta: timedelta = timedelta(0),
     peer_fingerprint: str | None = None,
+    operator_os: str | None = None,
 ) -> dict:
-    """The canonical approval envelope, as the Master would mint it."""
+    """The canonical approval envelope, as the Master would mint it.
+
+    ``operator_os`` defaults to an attested **root** operator, because that is what
+    a real privileged apply carries and what the apply-path tests here exercise.
+    Pass ``""`` for an unattested approval or ``_operator_os(is_root=False)`` for an
+    attested non-root one; the operator-ceiling tests do both.
+    """
     now = datetime.now(timezone.utc) + issued_delta
     import hashlib
 
@@ -169,6 +196,7 @@ def _payload(
         "issued_at": (now - timedelta(seconds=ttl_seconds / 2)).isoformat().replace("+00:00", "Z"),
         "expires_at": (now + timedelta(seconds=ttl_seconds / 2)).isoformat().replace("+00:00", "Z"),
         "nonce": nonce,
+        "operator_os": _operator_os() if operator_os is None else operator_os,
         "request_id": request_id,
     }
 
@@ -906,3 +934,118 @@ def test_internal_errors_do_not_leak_internals(harness: Harness, master_key, mon
     assert body["code"] == "internal_error"
     assert "SECRET_GUARD_DETAIL" not in str(body)
     assert "SECRET_GUARD_DETAIL" in capsys.readouterr().err
+
+
+# --- Step 66D-iii: the operator-OS ceiling at the apply path ------------------
+
+
+def _armed_guard(authorized_vault, monkeypatch, applied: list):
+    """A guard armed for apply, running as root, with the write itself captured."""
+    monkeypatch.setattr(guardmod, "apply_patch", lambda *args, **kwargs: applied.append((args, kwargs)))
+    monkeypatch.setattr(guardmod.os, "geteuid", lambda: 0)
+    return guardmod.Guard(
+        authorized_vault,
+        apply_enabled=True,
+        master_pubkey=_master_public(authorized_vault),
+        dry_run=False,
+    )
+
+
+def test_an_unattested_approval_cannot_apply(authorized_vault, master_key, monkeypatch) -> None:
+    """Empty is a value, and its value is "nobody vouched for this".
+
+    Checked *before* the write and before the euid question, so an unattested
+    approval is refused as unauthorised rather than failing later on a privilege
+    the process happens to have.
+    """
+    applied: list = []
+    guard = _armed_guard(authorized_vault, monkeypatch, applied)
+    with pytest.raises(guardmod.Refusal) as exc:
+        guard.handle_patch(_packet(master_key, operator_os="", nonce="op-none", request_id="r-op-none"))
+    assert exc.value.status == 403
+    assert exc.value.code == "operator_unattested"
+    assert applied == [], "the ceiling must be checked before any write, not after"
+
+
+def test_an_attested_non_root_operator_cannot_apply(authorized_vault, master_key, monkeypatch) -> None:
+    """A truthful attestation of an unprivileged human caps the session."""
+    applied: list = []
+    guard = _armed_guard(authorized_vault, monkeypatch, applied)
+    with pytest.raises(guardmod.Refusal) as exc:
+        guard.handle_patch(
+            _packet(
+                master_key,
+                operator_os=_operator_os(is_root=False),
+                nonce="op-user",
+                request_id="r-op-user",
+            )
+        )
+    assert exc.value.status == 403
+    assert exc.value.code == "operator_insufficient"
+    assert applied == []
+
+
+def test_an_attested_root_operator_reaches_the_apply(authorized_vault, master_key, monkeypatch) -> None:
+    """The attestation authorises — even though nothing here checks the daemon's uid twice."""
+    applied: list = []
+    guard = _armed_guard(authorized_vault, monkeypatch, applied)
+    result = guard.handle_patch(
+        _packet(master_key, operator_os=_operator_os(is_root=True), nonce="op-root", request_id="r-op-root")
+    )
+    assert result["status"] == "PATCH_APPLIED_AND_RE-LOCKED"
+    assert len(applied) == 1
+
+
+def test_a_malformed_attestation_is_refused_not_read_as_none(authorized_vault, master_key, monkeypatch) -> None:
+    """A corrupt root attestation must not silently downgrade to "unattested".
+
+    Both refuse, so the outcome is the same — but the ledger code differs, and the
+    difference is whether the Master attested a root operator and the record was
+    lost, or never made one.
+    """
+    applied: list = []
+    guard = _armed_guard(authorized_vault, monkeypatch, applied)
+    with pytest.raises(guardmod.Refusal) as exc:
+        guard.handle_patch(_packet(master_key, operator_os="{not json", nonce="op-bad", request_id="r-op-bad"))
+    assert exc.value.status == 403
+    assert exc.value.code == "operator_malformed"
+    assert applied == []
+
+
+# --- the RFI answer route (fabric Step 67D) -----------------------------------
+
+
+def _rfi_answer(master_key, vault: Path, *, content: bytes = b"# the answer\n", request_id="RFI-1", item_name="x.md"):
+    authz = guardmod._load_authz_module()
+    return authz.sign_rfi_answer(
+        content=content,
+        item_name=item_name,
+        peer_fingerprint=_own_fingerprint(vault),
+        request_id=request_id,
+        master_private_key=master_key,
+    )
+
+
+def test_the_rfi_route_verifies_an_answer_in_dry_run(harness, authorized_vault, master_key) -> None:
+    """POST /api/v1/rfi reaches handle_rfi and verifies under the pinned Master key.
+
+    The harness runs dry-run, so this is the verify-only path: the answer is
+    checked and nothing is written, which is the same contract the registry route
+    honours. The full install-over-a-wire path is master-node/tests/test_rfi_transport.py.
+    """
+    answer = _rfi_answer(master_key, authorized_vault)
+    status, body = harness.post(answer, path="/api/v1/rfi")
+    assert status == 200
+    assert body["status"] == "RFI_VERIFIED_DRY_RUN"
+    assert body["request_id"] == "RFI-1"
+    # Dry-run writes nothing into the inbox.
+    assert not (authorized_vault / "01_Inbox" / "x.md").exists()
+
+
+def test_the_rfi_route_refuses_a_tampered_answer(harness, authorized_vault, master_key) -> None:
+    """Content is bound by digest, so swapping it under a valid signature fails."""
+    answer = _rfi_answer(master_key, authorized_vault, content=b"# benign\n")
+    forged = {**answer, "content_b64": base64.b64encode(b"# injected\n").decode()}
+    status, body = harness.post(forged, path="/api/v1/rfi")
+    assert status == 400
+    assert body["code"] == "digest_mismatch"

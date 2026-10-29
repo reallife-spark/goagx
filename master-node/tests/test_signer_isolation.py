@@ -588,6 +588,10 @@ def _guard_approval(**overrides) -> dict:
         "issued_at": CLOCK.isoformat(),
         "expires_at": (CLOCK + timedelta(minutes=10)).isoformat(),
         "nonce": "nonce-0123456789abcdef",
+        # Unattested on purpose: these tests exercise the *signer*, which projects
+        # and signs the envelope but does not enforce the operator ceiling — the
+        # peer guard does. Empty is a legitimate value here, not an omission.
+        "operator_os": "",
         "request_id": "req-0123456789abcdef",
     }
     approval.update(overrides)
@@ -858,6 +862,125 @@ def test_it_refuses_a_signature_the_caller_supplied_on_an_admin_request(signer):
     assert response["admin_request"]["signature_b64"] != request["signature_b64"], (
         "the signer returned the caller's signature instead of its own"
     )
+
+
+# --- sign-rfi-answer (fabric Step 67D) -----------------------------------------
+
+_RFI_PEER = "a" * 64
+
+
+def _rfi_answer(content: bytes = b"# the answer\n", **overrides) -> dict:
+    """The `answer` object the signer's sign-rfi-answer op takes.
+
+    `content_b64` is the payload as it crosses the JSON socket; the signer decodes
+    it and computes `content_sha256` itself, so a caller never supplies the digest.
+    """
+    answer = {
+        "content_b64": base64.b64encode(content).decode(),
+        "item_name": "rfi-2026-10-25-guard.md",
+        "peer_fingerprint": _RFI_PEER,
+        "request_id": "RFI-1",
+    }
+    answer.update(overrides)
+    return answer
+
+
+def test_a_valid_rfi_answer_is_signed_and_verifies(signer, authz, operational_key):
+    response = signer.handle({"op": "sign-rfi-answer", "root_id": signer.root_id, "answer": _rfi_answer()})
+    assert response["ok"], response.get("error")
+    signed = response["answer"]
+    assert signed["signature_b64"]
+
+    _, public_b64 = operational_key
+    public = authz.public_key_from_b64(public_b64)
+    # The peer's own rule accepts what the signer produced — the test does not
+    # hand-roll verification.
+    ok, reason, content = authz.verify_rfi_answer(
+        signed, master_public_key=public, peer_fingerprint=_RFI_PEER, now=CLOCK
+    )
+    assert (ok, reason) == (True, ""), reason
+    assert content == b"# the answer\n"
+
+
+def test_an_empty_rfi_answer_is_signed(signer, authz, operational_key):
+    """'Nothing found' is an answer; the signer must not refuse it."""
+    response = signer.handle({"op": "sign-rfi-answer", "root_id": signer.root_id, "answer": _rfi_answer(content=b"")})
+    assert response["ok"], response.get("error")
+    _, public_b64 = operational_key
+    ok, reason, content = authz.verify_rfi_answer(
+        response["answer"],
+        master_public_key=authz.public_key_from_b64(public_b64),
+        peer_fingerprint=_RFI_PEER,
+        now=CLOCK,
+    )
+    assert (ok, reason, content) == (True, "", b"")
+
+
+def test_the_rfi_digest_is_computed_not_taken_from_the_caller(signer, authz):
+    """A caller-supplied content_sha256 is ignored: the digest binds the real bytes."""
+    bogus = hashlib.sha256(b"something else entirely").hexdigest()
+    response = signer.handle(
+        {
+            "op": "sign-rfi-answer",
+            "root_id": signer.root_id,
+            "answer": _rfi_answer(content=b"# the answer\n", content_sha256=bogus),
+        }
+    )
+    assert response["ok"], response.get("error")
+    assert response["answer"]["content_sha256"] == hashlib.sha256(b"# the answer\n").hexdigest()
+    assert response["answer"]["content_sha256"] != bogus
+
+
+def test_it_refuses_an_rfi_answer_without_an_answer_object(signer):
+    response = signer.handle({"op": "sign-rfi-answer", "root_id": signer.root_id})
+    assert not response["ok"] and "requires an 'answer' object" in response["error"]
+
+
+def test_it_refuses_an_rfi_answer_missing_content_b64(signer):
+    answer = _rfi_answer()
+    del answer["content_b64"]
+    response = signer.handle({"op": "sign-rfi-answer", "root_id": signer.root_id, "answer": answer})
+    assert not response["ok"] and "content_b64" in response["error"]
+
+
+def test_it_refuses_an_rfi_answer_with_a_traversing_item_name(signer):
+    """item_name is a write destination inside the projection, so this is a guard."""
+    response = signer.handle(
+        {
+            "op": "sign-rfi-answer",
+            "root_id": signer.root_id,
+            "answer": _rfi_answer(item_name="../00_System/user.md"),
+        }
+    )
+    assert not response["ok"] and "single safe path component" in response["error"]
+
+
+def test_it_refuses_an_rfi_answer_with_bad_content_base64(signer):
+    response = signer.handle(
+        {"op": "sign-rfi-answer", "root_id": signer.root_id, "answer": _rfi_answer(content_b64="!!!not-base64!!!")}
+    )
+    assert not response["ok"] and "not valid base64" in response["error"]
+
+
+def test_it_refuses_a_caller_supplied_signature_on_an_rfi_answer(signer):
+    response = signer.handle(
+        {
+            "op": "sign-rfi-answer",
+            "root_id": signer.root_id,
+            "answer": _rfi_answer(signature_b64=base64.b64encode(b"forged").decode()),
+        }
+    )
+    assert response["ok"], response.get("error")
+    assert response["answer"]["signature_b64"] != base64.b64encode(b"forged").decode()
+
+
+def test_an_rfi_answer_is_recorded_in_the_ledger(signer, tmp_path):
+    response = signer.handle({"op": "sign-rfi-answer", "root_id": signer.root_id, "answer": _rfi_answer()})
+    assert response["ok"], response.get("error")
+    assert response["ledger_block"]
+    ledger = json.loads((tmp_path / "ledger.json").read_text())
+    assert ledger["blocks"][-1]["data"]["operation"] == "sign-rfi-answer"
+    assert ledger["blocks"][-1]["data"]["subject"] == "RFI-1"
 
 
 def test_it_refuses_a_group_readable_key(signer_module, root, authz, consensus, tmp_path):
@@ -1490,3 +1613,133 @@ def test_cli_refuses_to_start_without_a_key(tmp_path):
     assert result.returncode == 1
     assert "not found" in result.stderr or "not valid" in result.stderr
     assert "refusing" in result.stderr or "not found" in result.stderr
+
+
+# --- share ratification ------------------------------------------------------
+
+
+def _share_ratification(*, decision: str = "ratified", deadline: str | None = None) -> dict:
+    return {
+        "schema_version": "1.0",
+        "share_id": "share-1",
+        "node_id": "peer-1",
+        "node_fingerprint": "a" * 64,
+        "grant_id": "grant-1",
+        "decision": decision,
+        "reason": "operator-approved" if decision == "ratified" else "not-approved",
+        "accepted_at": CLOCK.isoformat(),
+        "deadline": deadline or (CLOCK + timedelta(hours=2)).isoformat(),
+        "ratified_at": CLOCK.isoformat(),
+        "flag_retained": True,
+    }
+
+
+def test_it_signs_a_share_ratification_and_records_the_master_event(signer) -> None:
+    response = signer.handle(
+        {
+            "op": "sign-share-ratification",
+            "root_id": signer.root_id,
+            "ratification": _share_ratification(),
+        }
+    )
+    assert response["ok"], response.get("error")
+    signed = response["ratification"]
+    assert signer.authz.verify_share_ratification(signed, signer.authz.public_key_from_b64(signer.public_key_b64))
+
+    ledger = json.loads(signer.ledger_path.read_text())
+    assert any(
+        block.get("data", {}).get("event") == "share_ratified" and block.get("data", {}).get("share_id") == "share-1"
+        for block in ledger["blocks"]
+    )
+
+
+def test_it_refuses_to_ratify_after_the_deadline(signer) -> None:
+    response = signer.handle(
+        {
+            "op": "sign-share-ratification",
+            "root_id": signer.root_id,
+            "ratification": _share_ratification(deadline=(CLOCK - timedelta(minutes=1)).isoformat()),
+        }
+    )
+    assert response["ok"] is False
+    assert "deadline" in response["error"]
+
+
+def test_it_refuses_an_unsigned_field_in_a_share_ratification(signer) -> None:
+    ratification = _share_ratification()
+    ratification["extra"] = "unsigned"
+    response = signer.handle({"op": "sign-share-ratification", "root_id": signer.root_id, "ratification": ratification})
+    assert response["ok"] is False
+    assert "unsigned field" in response["error"]
+
+
+def test_it_records_share_evidence_in_the_signed_ledger(signer) -> None:
+    evidence = {
+        "event_type": "share-access",
+        "grant_id": "grant-1",
+        "node_pair": "a-b",
+        "share_type": "kb-view",
+        "content_sha256": "b" * 64,
+        "captured_at": CLOCK.isoformat(),
+    }
+    response = signer.handle({"op": "record-share-evidence", "root_id": signer.root_id, "evidence": evidence})
+    assert response["ok"], response.get("error")
+    assert response["content_sha256"] == "b" * 64
+    ledger = json.loads(signer.ledger_path.read_text())
+    assert any(
+        block.get("data", {}).get("event") == "share_evidence"
+        and block.get("data", {}).get("content_sha256") == "b" * 64
+        for block in ledger["blocks"]
+    )
+
+
+def test_it_refuses_a_bad_share_evidence_digest(signer) -> None:
+    evidence = {
+        "event_type": "share-access",
+        "grant_id": "grant-1",
+        "node_pair": "a-b",
+        "share_type": "kb-view",
+        "content_sha256": "not-a-digest",
+        "captured_at": CLOCK.isoformat(),
+    }
+    response = signer.handle({"op": "record-share-evidence", "root_id": signer.root_id, "evidence": evidence})
+    assert response["ok"] is False
+    assert "content_sha256" in response["error"]
+
+
+def test_it_signs_a_reversible_trust_transition(signer) -> None:
+    transition = {
+        "schema_version": "1.0",
+        "node_id": "peer-1",
+        "level": "flagged",
+        "previous_level": "authenticated",
+        "reason": "review-needed",
+        "decided_at": CLOCK.isoformat(),
+        "reversible": True,
+        "flag_preserved": True,
+    }
+    response = signer.handle({"op": "sign-trust-transition", "root_id": signer.root_id, "transition": transition})
+    assert response["ok"], response.get("error")
+    signed = response["transition"]
+    assert signer.authz.verify_trust_transition(signed, signer.authz.public_key_from_b64(signer.public_key_b64))
+    ledger = json.loads(signer.ledger_path.read_text())
+    assert any(
+        block.get("data", {}).get("event") == "trust_level_changed" and block.get("data", {}).get("node_id") == "peer-1"
+        for block in ledger["blocks"]
+    )
+
+
+def test_it_refuses_a_non_reversible_trust_transition(signer) -> None:
+    transition = {
+        "schema_version": "1.0",
+        "node_id": "peer-1",
+        "level": "flagged",
+        "previous_level": "flagged",
+        "reason": "review-needed",
+        "decided_at": CLOCK.isoformat(),
+        "reversible": False,
+        "flag_preserved": True,
+    }
+    response = signer.handle({"op": "sign-trust-transition", "root_id": signer.root_id, "transition": transition})
+    assert response["ok"] is False
+    assert "reversible" in response["error"]

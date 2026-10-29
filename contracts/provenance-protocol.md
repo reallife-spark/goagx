@@ -6,11 +6,14 @@ normative machine-readable form is `contracts/tracking-schema.json`
 what a reader may conclude from them.
 
 What is built and what is not: the layout, the tracking block, the user record,
-the ledger records, the secret index and the local signing tooling are built as
-of this step. **The transport that would deliver inbox items — the email service
-and node-to-node delivery — is specified, not built.** Every rule below that
-describes who may act on an arriving item is a policy awaiting a listener, and
-`contracts/ports.json` is what says so.
+the ledger records, the secret index and the local signing tooling are built.
+**One node-to-node delivery leg is built too: a Master-signed RFI answer pushed to
+`POST /api/v1/rfi` on the guard (9090) and installed into `01_Inbox/` with an
+`inbox_acceptance` record** (`contracts/rfi-schema.json`, fabric Step 67D). The
+email service, the RFI *request* leg, and the dispatch bridge as a server remain
+specified, not built. Every rule below that describes who may act on an arriving
+item is a policy; for the RFI answer channel a listener now enforces it, and
+`contracts/ports.json` names the route that says so.
 
 ## The chain of accountability
 
@@ -228,8 +231,15 @@ approval/report/grant_use records above).
 
 `checkpoint` is a **peer** event, disjoint from the Master vocabulary: a
 checkpoint is a statement about a peer chain, and only the peer that owns the
-chain can sign it. No new port exists yet — the anchor/verify pair is
-exercised in-process and grows over the existing share ports (PLAN Step 36).
+chain can sign it. Step 70E closes the periodic-anchor gap without a new port:
+`peer-node/services/sparknet-checkpoint-anchor.py` (oneshot, on a 15-minute timer)
+appends a checkpoint when the head has moved, then pushes the full signed block
+as `kind=checkpoint_anchor` telemetry over the existing 8090 intake. Re-running
+over an unchanged head appends nothing — the newest block already snapshots
+every block before it — and re-pushes the same evidence; an empty ledger exits
+silently. The receiver verifies the block with `verify_checkpoint` before
+recording it, so the Master holds the signature, not just a root. The
+anchor/verify pair itself remains exercised in-process (PLAN Step 36).
 
 A node that receives another node's signed checkpoint **anchors** it. Anchored
 state is kept in the receiver's state dir
@@ -264,8 +274,34 @@ agent sanitizes it before anything downstream reads it.
 - source `email` → the sender must be on the authorized list in
   `00_System/user.md`, then treated as peer-origin.
 
+The peer reviewer is built: `agents/vault-curator` is a deterministic CLI (no
+listener) that refuses untrusted ingress without an accepted, `sanitized: true`
+`inbox_acceptance` naming it, strips active content outside fenced code, refuses
+instruction-like text unless explicitly allowed, sets `validity.state:
+sanitized` and signs the reviewed bytes with the user key. Accept with
+`make -C peer-node accept-inbox ITEM=01_Inbox/... SOURCE=... REVIEWER=agents/vault-curator SANITIZED=1`,
+then review with `make -C peer-node review-inbox ITEM=01_Inbox/... APPLY=1`.
 Reviewer agents: `agents/vault-curator` on a peer, `.opencode/agents/evidence-reviewer`
-on the Master. The transport that would deliver these items does not exist yet.
+on the Master. The RFI *answer* leg of the transport is built — a Master-signed
+answer arrives on `POST /api/v1/rfi` (guard, 9090) and is installed with an
+`inbox_acceptance` record; the email service and the RFI *request* leg are not.
+
+An item that arrives over the transport is also **notified** to the human, because
+acceptance is a human act and an unnoticed item is an unaccepted one. The node's
+own mechanism is `shared/sparknet-notify.py` — a durable arrival spool
+(`<state-dir>/notifications/arrivals.jsonl`, 0600) plus a best-effort KDE Connect
+ping — not the fabric-root plugin (`scripts/plugins/kde-notify.ts`), which is
+deliberately not bundled into nodes; the Master console's ping delegates to the
+same module rather than keeping a second copy. The notification is the *alert*; the
+`inbox_acceptance` block is the *audit trail*. It never blocks or undoes the
+install, and a headless peer with no `kdeconnect-cli` honestly no-ops the ping
+while still leaving the spool row. Real-time push to a remote operator from such a
+peer rides Phase 4 telemetry to the Master, not a local ping: Step 70F has the
+guard emit `kind=inbox_alert` after an installed RFI answer, gated on the peer's
+`telemetry` capability, unsigned and overlay-attributed like every report, with the
+item, source, request id, content digest and audit-block hash in its payload. A
+failed alert push is logged and ignored — the acceptance, the ledger block and the
+local spool already stand, and the alert carries no authority.
 
 ## Secrets
 

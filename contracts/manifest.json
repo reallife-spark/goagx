@@ -5,31 +5,31 @@
       "contract": "capabilities",
       "file": "capabilities.json",
       "schema_version": "1.0",
-      "sha256": "16e4642022fb6f590f5eadeb6685b17e05c4f92399b2b0e2a6fa6684723fbc73"
+      "sha256": "65b92d0185edc4f8661c196f7fc2d0ed705675e5a3d01bd330ff64226b8bdcd7"
     },
     {
       "contract": "guard-approval",
       "file": "guard-approval.json",
       "schema_version": "1.0",
-      "sha256": "2b7f4f5e656ad17ce5c5494d4b7e3c7beaa76d3f1825d7b0c7dca026bbf534b1"
+      "sha256": "e95dad8bfda51ef83020ac9ee9c39e89bb345268517ac7ff73c68ee71ea45f7c"
     },
     {
       "contract": "identity-schema",
       "file": "identity-schema.json",
       "schema_version": "1.0",
-      "sha256": "0073b887b92a407cc6c0d6ebd75871cbfc81bf3eda45dabe95548cf5bb3932b3"
+      "sha256": "bf4c51af6b13d8ab736aa9867d43ecfffd4de083bbb6c0380196fa76f634ae2e"
     },
     {
       "contract": "overlay",
       "file": "overlay.json",
       "schema_version": "1.0",
-      "sha256": "0839155320ba5f7cfec8c2fbc1b54fb13cd394aeb9659aac5b68ce0371437487"
+      "sha256": "3b73cb625f33aabb19345a94491702def0731a2b85496115e3406cad5ec83437"
     },
     {
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "c325866cdab5df5da64304d99a777875935d36ceebad6ff71b6cec4cb462d0bc"
+      "sha256": "7e0e9e6d8d65aa6a4a6d8dffe7fff19f9996d361dee945794e439f3cb0f41fff"
     },
     {
       "contract": "proposal-schema",
@@ -41,7 +41,7 @@
       "contract": "reflex",
       "file": "reflex-schema.json",
       "schema_version": "1.0",
-      "sha256": "204ebcb1cff0fac1266a7e13c8f0b08c89889e9f971b77f73674ef09fe2277ae"
+      "sha256": "4e2b86e0fc42e8067ddd026afa5889e226fe9cb0b11c2681cd3529908440a7e2"
     },
     {
       "contract": "registry-publication",
@@ -56,10 +56,22 @@
       "sha256": "c5da6abd1578314bce9cccdeb4cf30b5568d07216a749b8e5ba5ea6e27641b22"
     },
     {
+      "contract": "rfi-schema",
+      "file": "rfi-schema.json",
+      "schema_version": "1.0",
+      "sha256": "84f03ab8b457feebc4b3c99137a12f69823fdb2dddfe942d6db6a2c6fd030e50"
+    },
+    {
+      "contract": "telemetry-schema",
+      "file": "telemetry-schema.json",
+      "schema_version": "1.0",
+      "sha256": "04b9a289b8469b23075e4ece9f167302fd5db8a3ca34c6ac2fc6a26de647b5af"
+    },
+    {
       "contract": "tracking-schema",
       "file": "tracking-schema.json",
       "schema_version": 1,
-      "sha256": "b18062ee19d620eee44c1430e2d68daee2eaad4e9701e2a4ba47bc2bf511bb62"
+      "sha256": "400a834928bfb40450661121e1fe3a134c92903f775d9399aab0684aa9068d07"
     }
   ],
   "do_not_edit": true,
@@ -221,7 +233,7 @@
     },
     "4203": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
+      "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "share-ratification"
     },
@@ -230,6 +242,12 @@
       "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "cluster-election"
+    },
+    "4211": {
+      "bound_by": "peer",
+      "implementation_state": "implemented",
+      "runtime": "not-verifiable-here",
+      "service": "liveness-probe"
     },
     "4220": {
       "bound_by": "master",
@@ -275,9 +293,9 @@
     },
     "8090": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
-      "runtime": "not-listening",
-      "service": "master-instant-push"
+      "implementation_state": "implemented",
+      "runtime": "not-verifiable-here",
+      "service": "master-peer-intake"
     },
     "9090": {
       "bound_by": "peer",
