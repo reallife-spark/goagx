@@ -7,8 +7,8 @@ tree. Fixes belong upstream in [sparknet](https://github.com/reallife-spark/spar
 
 | | |
 |---|---|
-| Published | 2026-10-30T05:10:23Z |
-| sparknet | `7cd0eb5b6a0804fb6173bc12c0684d4a790d03de` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
+| Published | 2026-10-30T16:21:02Z |
+| sparknet | `360bfd5fefa40cd9c68b04d0d55040c5a114a80f` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
 | goSpark | `91a6ef9ad28a0f4daa3a33eb1e80a026274125fa` of [https://github.com/reallife-spark/goSpark.git](https://github.com/reallife-spark/goSpark.git) |
 | Platform | NVIDIA Jetson AGX Xavier — `sm_72`, L4T r35 (JetPack 5), 16 GB |
 | Engine | vLLM v0.2.7 built from source inside the node image |
