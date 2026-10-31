@@ -35,12 +35,17 @@ Updated: 2026-10-31
   syntax out or gate it the same way.
 - The fleet uses iptables (`SPARKNET-FW-*`), not nftables. A published `0.0.0.0`
   port is held private by the firewall, not by the bind.
+- **Live on agx64 (2026-10-31)**: vault provisioner and admin agent active,
+  telemetry/liveness/checkpoint/vault-health timers active, RFI request/answer
+  round trip and bridge `vault.rfi` verified, registry sequence 2 installed,
+  admin federation feed/users verified. A fresh signup→approval cycle is the
+  remaining Step 11 leg.
+- **User key was re-keyed on 2026-10-31** after a deployment mishap deleted
+  `.state/keys`; owner `U-27689` was preserved and the 9 tracked notes were
+  re-signed. WG and node keys were recovered; record this in provenance history.
 
 ## Blockers
 
-- Live per-user provisioning, the current-pair admin federation, the 8090 RFI
-  request round trip and the RFI responder/timer are `DoD: confirm: user` until
-  exercised on `agx64`/`agx32`.
 - `4221`/`4223` shared knowledge services are `spec-only`; the RFI loop is the
   v1 knowledge path.
 

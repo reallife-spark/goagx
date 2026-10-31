@@ -1,7 +1,7 @@
 ---
 title: sparknet peer-node Plan
 updated: 2026-10-31
-current: 13
+current: 11
 ---
 
 # sparknet peer-node — Active Plan
@@ -38,9 +38,7 @@ current: 13
     vault markup and is the default model's `meta.knowledge`; (4) a digest pass
     re-embeds changed pages; (5) `master-<id>` stays inactive on a peer;
     (6) tests, `contract-test`, `lint` and `bundle-verify` are green.
-  - **Status**: code and unit are built and were proven on the retired cluster2
-    pair. A real signup → Accept → provision cycle on `agx64` is
-    `DoD: confirm: user`.
+  - **Status**: code and unit are built; existing approved users were provisioned on `agx64` on 2026-10-31, with CONTEXT and self-healing indexed into their KBs. A fresh signup → Accept → provision cycle remains `DoD: confirm: user`.
 
 ## Step 12 — Node admin agent: auth events and pending-signup supervision
 
@@ -56,7 +54,7 @@ current: 13
 
 ## Step 13 — User AI context, knowledge loop and self-healing
 
-- [ ] **Step 13** — Make the peer a coherent user AI node on `agx64`:
+- [x] **Step 13** — Make the peer a coherent user AI node on `agx64`:
   - [x] **13A — Context.** Generate `CONTEXT.md` from the identity pages and
     `../contracts/knowledge-flow.md`; load it in OpenCode, the Open WebUI
     structure KB, per-user KBs/models, the vLLM/MASTERSPIKE precontext and the
@@ -76,7 +74,7 @@ current: 13
   - **DoD**: `make context-check`, `make vault-health`, the RFI loop test, the
     context-propagation test and the peer suite are green; `make bundle-verify
     ROLE=peer` passes; `agx64` live legs are `DoD: confirm: user`.
-  - **Status**: code complete 2026-10-31; context, RFI client, bridge tool and self-healing pass the peer suite and bundle verify. Live `agx64` legs are `DoD: confirm: user`.
+  - **Status: complete and live-verified on agx64 2026-10-31.** Context is in WebUI RAG, per-user KBs, vLLM precontext and OpenCode; `vault.rfi` completed a real request→answer→inbox round trip; telemetry/checkpoint/self-healing timers run; peer suite and bundle verify pass.
 
 ## Next
 

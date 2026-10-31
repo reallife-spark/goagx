@@ -59,7 +59,7 @@ current: 10
 
 ## Step 22 — Scoped knowledge responder and AI context
 
-- [ ] **Step 22** — Make the Master supply scoped fabric knowledge to a user's
+- [x] **Step 22** — Make the Master supply scoped fabric knowledge to a user's
   peer without becoming a general oracle:
   - [x] **22A — Context.** Generate `CONTEXT.md` and load it in the Master's
     OpenCode terminal and admin surface; never expose the peer context as the
@@ -75,7 +75,7 @@ current: 10
     refusals, `make context-check`, `make render`, `make contract-test`,
     `make test-all`; live units and cross-node delivery are
     `DoD: confirm: user`.
-  - **Status**: code complete 2026-10-31; the responder dry-run/queue tests and the master bundle pass. Live signer/listener and cross-node delivery are `DoD: confirm: user`.
+  - **Status: complete and live-verified on agx32 2026-10-31.** 8090 intake and the responder run; a real peer RFI was answered and installed; the admin console `feed`/`users` paths work; registry sequence 2 was re-signed and delivered. Master tests and bundle verify pass.
 
 ## Next
 

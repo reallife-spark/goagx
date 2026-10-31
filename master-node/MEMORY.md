@@ -29,10 +29,15 @@ Updated: 2026-10-31
 - `$SPARKNET_STATE_DIR` is outside the vault. The admin surface bind-mounts the
   vault read-only, so the key cannot live inside it. `make keys-check` enforces
   the boundary.
-- **Open items**: Master Steps 10–12 live legs, the RFI responder/timer, the
-  `4221`/`4223` shared services, and Phase 9's destructive legs are open or
-  spec-only. Step 8's live containment was verified on `agx32` 2026-10-28;
-  Step 9 live arming remains operator-confirmed.
+- **Live on agx32 (2026-10-31)**: the 8090 peer intake and scoped RFI
+  responder are active; a real peer request was answered and installed; the
+  admin console `feed` and `users` paths work over `admin-supervise`; registry
+  sequence 2 was re-signed under the current envelope and delivered. The peer
+  entry now carries `admin-supervise`.
+- **Open items**: Master Steps 10–12 live legs, `4221`/`4223`, Phase 9's
+  destructive legs, and a fresh signup→approval cycle on the peer remain open or
+  spec-only. Step 8 live containment was verified on `agx32` 2026-10-28; Step 9
+  live arming remains operator-confirmed.
 - **Knowledge flow**: a signed RFI answer is the only Master→peer knowledge
   channel. Registry, approvals, telemetry and admin requests are not knowledge;
   see `../contracts/knowledge-flow.md`.

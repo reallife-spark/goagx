@@ -7,7 +7,7 @@ tree. Fixes belong upstream in [sparknet](https://github.com/reallife-spark/spar
 
 | | |
 |---|---|
-| Published | 2026-10-31T07:38:39Z |
+| Published | 2026-10-31T07:55:04Z |
 | sparknet | `1b868b8fb5b59a17197d1bfbbd95866fa0f3cf44` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
 | goSpark | `91a6ef9ad28a0f4daa3a33eb1e80a026274125fa` of [https://github.com/reallife-spark/goSpark.git](https://github.com/reallife-spark/goSpark.git) |
 | Platform | NVIDIA Jetson AGX Xavier — `sm_72`, L4T r35 (JetPack 5), 16 GB |
