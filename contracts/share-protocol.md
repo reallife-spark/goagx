@@ -2,7 +2,7 @@
 
 Both roles implement this conversation. The peer side landed in
 `peer-node/PLAN.md` Steps 6 and 8, the Master side in
-`master-node/plans/MASTER_BUILD_PLAN.md` Steps 10–12, so the offer lifecycle, the
+`master-node/PLAN.md` Steps 10–12, so the offer lifecycle, the
 four clocks, the trust levels and the reconciliation rules are built and tested —
 against in-process node pairs with injected clocks, on a host that has no
 overlay.

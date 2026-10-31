@@ -37,8 +37,8 @@ REASON ?=
 
 .PHONY: help env-init validate status plan test test-all lint spec-check \
         env-show parity ledger evidence-capture review-agents keygen keys-check units units-check \
-        signer signer-unit reflex-unit peer-intake-unit wg-observer-unit console \
-        provenance-verify user-init provenance-append ingest precommit shims-check \
+        signer signer-unit reflex-unit peer-intake-unit rfi-responder-unit wg-observer-unit console vault-health vault-heal \
+        provenance-verify user-init provenance-append ingest precommit shims-check context-pack context-check governance-check \
         bundle wiki-preflight wiki-status wiki-lint wiki-query skills-sync skills-check clean
 
 help: ## Show this help
@@ -51,8 +51,17 @@ env-init: ## Write this role's .env + wiki dirs from .env.example (idempotent)
 env-show: ## Print the paths this role resolves (vault, peer node, state dir)
 	@"$(VAULT_ROOT)/scripts/sparknet-master-env.sh"
 
+context-pack: ## Regenerate this role's CONTEXT.md
+	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-context-pack.py --root "$(VAULT_ROOT)" --role master
+
+governance-check: ## Enforce the five-file shape and budgets
+	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-governance-check.py
+
+context-check: ## Fail if this role's CONTEXT.md is stale
+	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-context-pack.py --root "$(VAULT_ROOT)" --role master --check
+
 validate: ## Charter, plan, executables wired, and parity with the peer
-	@for f in AGENTS.md MEMORY.md MISSION.md INTENT.md plans/MASTER_BUILD_PLAN.md \
+	@for f in AGENTS.md CONTEXT.md MEMORY.md MISSION.md INTENT.md PLAN.md \
 	          configs/wireguard/master-peer.template security/key-management.md; do \
 		  [ -f "$(VAULT_ROOT)/$$f" ] || { echo "missing $$f" >&2; exit 1; }; \
 	done
@@ -67,20 +76,20 @@ validate: ## Charter, plan, executables wired, and parity with the peer
 	@$(MAKE) --no-print-directory ledger        >/dev/null && echo "  ✓ master ledger: chain verifies"
 
 status: ## Where the build plan stands
-	@grep -m1 '^current:' "$(VAULT_ROOT)/plans/MASTER_BUILD_PLAN.md" \
-	  || { echo "MASTER_BUILD_PLAN.md has no 'current:' cursor" >&2; exit 1; }
+	@grep -m1 '^current:' "$(VAULT_ROOT)/PLAN.md" \
+	  || { echo "PLAN.md has no 'current:' cursor" >&2; exit 1; }
 	@printf '\n  steps done: %s of %s\n' \
-	  "$$(grep -c '^- \[x\]' "$(VAULT_ROOT)/plans/MASTER_BUILD_PLAN.md")" \
-	  "$$(grep -c '^- \[ \]' "$(VAULT_ROOT)/plans/MASTER_BUILD_PLAN.md")"
+	  "$$(grep -c '^- \[x\]' "$(VAULT_ROOT)/PLAN.md")" \
+	  "$$(grep -c '^- \[ \]' "$(VAULT_ROOT)/PLAN.md")"
 
 # Prints the block for whichever step the `current:` cursor points at.
 plan: ## Print the active plan step with its DoD
-	@cursor="$$(grep -m1 '^current:' "$(VAULT_ROOT)/plans/MASTER_BUILD_PLAN.md" \
+	@cursor="$$(grep -m1 '^current:' "$(VAULT_ROOT)/PLAN.md" \
 	           | sed 's/.*current:[[:space:]]*//')"; \
 	if [ "$$cursor" = "done" ]; then echo "plan is terminal: current: done"; exit 0; fi; \
 	awk -v want="$$cursor" \
 	  '/^## Step /{ inside = (index($$0, "Step " want) > 0) } \
-	   inside { print }' "$(VAULT_ROOT)/plans/MASTER_BUILD_PLAN.md"
+	   inside { print }' "$(VAULT_ROOT)/PLAN.md"
 
 spec-check: ## Assert the spec/impl boundary has not rotted
 	@$(PY) -m pytest "$(VAULT_ROOT)/tests" -q
@@ -119,6 +128,7 @@ REFLEX_UNIT := sparknet-reflex-broker.service
 # enabled, like the signer and reflex broker: a peer-facing socket on the
 # authority-plane node is an operator's decision to bring up.
 PEER_INTAKE_UNIT := sparknet-peer-intake.service
+RFI_RESPONDER_UNIT := sparknet-rfi-responder.service
 # The root WireGuard observer is staged with its timer, not enabled: a root
 # one-minute timer is an operator decision and Step 9G owns the live window.
 WG_OBSERVER_UNITS := sparknet-wg-observer.service sparknet-wg-observer.timer
@@ -188,6 +198,21 @@ reflex-unit: ## Stage the reflex broker unit ONLY (does not enable it; 64F does)
 	@echo "  ✓ staged $(SIGNER_UNIT) into $(UNIT_DIR) — not enabled."
 	@echo "    It will refuse to start until SPARKNET_NODE_ID and"
 	@echo "    \$$SPARKNET_STATE_DIR/trust-root.json name this node as Master."
+
+vault-health: ## Diagnose the vault (read-only; writes 00_System/vault-health.json)
+	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-vault-health.py --root "$(VAULT_ROOT)"
+
+vault-heal: ## Safe derived repairs only
+	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-vault-health.py --root "$(VAULT_ROOT)" --repair
+
+rfi-respond: ## Answer queued RFI requests once (OFFLINE=1 for a test; DRY_RUN=1 to print)
+	@$(PY) "$(VAULT_ROOT)/services/sparknet-rfi-responder.py" --once \
+	  $(if $(OFFLINE),--offline) $(if $(DRY_RUN),--dry-run) $(if $(URL),--url "$(URL)") \
+	  $(if $(REGISTRY),--registry "$(REGISTRY)") $(if $(JSON),--json)
+
+rfi-responder-unit: ## Stage the RFI responder unit ONLY (does not enable it)
+	@install -Dm644 "$(VAULT_ROOT)/systemd/$(RFI_RESPONDER_UNIT)" "$(UNIT_DIR)/$(RFI_RESPONDER_UNIT)"
+	@echo "  ✓ staged $(RFI_RESPONDER_UNIT) into $(UNIT_DIR) — not enabled."
 
 peer-intake-unit: ## Stage the peer-intake (8090) unit ONLY (does not enable it)
 	@install -Dm644 "$(VAULT_ROOT)/systemd/$(PEER_INTAKE_UNIT)" "$(UNIT_DIR)/$(PEER_INTAKE_UNIT)"

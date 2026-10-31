@@ -414,7 +414,7 @@
       "runtime": "not-verifiable-here",
       "runtime_why": "Committed declarative config exists (master-node/configs/admin-surface/docker-compose.admin.yml, master-node/configs/admin-surface/opencode.json) and the declared topology is asserted by master-node/tests/test_admin_surface.py, the committed topology is deployed on the live Master (agx32), where the container `sparknet-admin-webui` binds `10.100.0.1:8088`; on this development host no overlay interface exists, so nothing binds it here.",
       "service": "admin-surface",
-      "status": "DEPLOYED ON THE LIVE MASTER \u2014 the container `sparknet-admin-webui` binds 10.100.0.1:8088 and is health-checked; the overlay anchor carries Before=docker.service so the bind succeeds at boot. On this development host there is no overlay and therefore no listener: it stays provisioned here. Reachability from an operator client is DoD: confirm: user in master-node/plans/MASTER_BUILD_PLAN.md Step 18."
+      "status": "DEPLOYED ON THE LIVE MASTER \u2014 the container `sparknet-admin-webui` binds 10.100.0.1:8088 and is health-checked; the overlay anchor carries Before=docker.service so the bind succeeds at boot. On this development host there is no overlay and therefore no listener: it stays provisioned here. Reachability from an operator client is DoD: confirm: user in master-node/PLAN.md Step 18."
     },
     "8090": {
       "binds_to": "10.100.0.1",

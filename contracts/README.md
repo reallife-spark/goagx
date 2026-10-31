@@ -30,6 +30,7 @@ the tests then prove both roles still agree.
 | `provenance-protocol.md` | the narrative behind that schema: the accountability chain, stale-vs-invalid, ledger-only approvals, inbox dispatch policy, secret custody |
 | `proposal-schema.json` | the cross-user proposal workflow: the proposal/review/decision records, the draft→submitted→reviewed→decided lifecycle, and what a verified chain verifies |
 | `proposal-protocol.md` | the narrative behind that schema: why a review is a first-class object, the fail-closed transitions, inline keys and integrity-vs-identity, and why a verified chain is not an authority to write |
+| `knowledge-flow.md` | the map of every Master→peer, peer→Master and peer↔peer channel: what it may carry, what it must never carry, how it is authenticated, and why authority and knowledge never share a channel |
 | `manifest.json` | **generated** — the machine-readable inventory of this directory: each JSON contract by hash (so an edit without a re-render is caught) plus the projected capability and port tables. Rendered by `scripts/sparknet-render.py`; never hand-edited. |
 
 ## Why this directory exists
