@@ -74,6 +74,9 @@ services:
       WEBUI_ADMIN_EMAIL: "${SPARKNET_WEBUI_ADMIN_EMAIL:-}"
       WEBUI_ADMIN_PASSWORD: "${SPARKNET_WEBUI_ADMIN_PASSWORD:-}"
       WEBUI_ADMIN_NAME: "${SPARKNET_WEBUI_ADMIN_NAME:-Sparknet Admin}"
+      # Preserve the running instance's session-secret across a compose
+      # project migration. Empty on a fresh deploy; Open WebUI generates one.
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-}"
       # Step 5 surface — the node's agents as OpenAI-compatible models on THIS
       # node's dispatch bridge (loopback 4096; on the host netns the loopback
       # address is the host's own). The roles come from

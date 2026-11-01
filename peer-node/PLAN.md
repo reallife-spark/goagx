@@ -93,9 +93,10 @@ current: 14
     users/models/KBs/usage and never stores prompt text in Qdrant.
   - [x] **14C — Uplift.** `scripts/sparknet-uplift-push.py` signs inventory,
     trace, snapshot and KV pushes and spools failures.
-  - [ ] **14D — Live.** Migrate agx64, reindex Open WebUI KBs, verify per-file
-    and per-KB retrieval, upload a real snapshot, and keep the old Chroma volume
-    for 14 days. `DoD: confirm: user`.
+  - [x] **14D — Live.** Migrated agx64 on 2026-11-01: Qdrant `v1.20.0` on
+    loopback, Open WebUI 4 KBs/107 files reindexed, per-KB and per-file
+    retrieval 200, inventory 41 records mirrored on the Master, four collection
+    snapshots uploaded, Chroma stopped and its volume retained for 14 days.
   - **DoD**: peer suite green; live legs `DoD: confirm: user`.
 
 ## Next

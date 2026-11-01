@@ -39,7 +39,7 @@ REASON ?=
         env-show parity ledger evidence-capture review-agents keygen keys-check units units-check \
         signer signer-unit reflex-unit peer-intake-unit rfi-responder-unit wg-observer-unit console vault-health vault-heal \
         provenance-verify user-init provenance-append ingest precommit shims-check context-pack context-check governance-check \
-        bundle wiki-preflight wiki-status wiki-lint wiki-query skills-sync skills-check vector-reindex vector-serve uplift-intake uplift-intake-unit uplift-intake-check distill distill-doctor distill-dataset distill-run file-share-serve nat-status-serve share-ratify-unit share-ratify-serve share-ratify-list share-ratify-approve share-ratify-refuse clean
+        bundle wiki-preflight wiki-status wiki-lint wiki-query skills-sync skills-check vector-reindex vector-serve uplift-intake uplift-intake-unit uplift-intake-check distill distill-doctor distill-trainer-help distill-dataset distill-run file-share-serve nat-status-serve share-ratify-unit share-ratify-serve share-ratify-list share-ratify-approve share-ratify-refuse clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -98,6 +98,9 @@ uplift-intake-unit: ## Stage the 8091 uplink unit ONLY (never enables it)
 
 uplift-intake-check: ## Validate the 8091 registry/keyring without listening
 	@$(PY) "$(ROLE_ROOT)/services/sparknet-uplift-intake.py" --check --state "$(UPLIFT_STATE)" --registry "$(ROLE_ROOT)/manifests/node-authorizations.json" --trusted-key "$${SPARKNET_UPLIFT_TRUSTED_KEY:?set NODE_ID=PATH}"
+
+distill-trainer-help: ## Show the LoRA trainer launcher contract
+	@$(ROLE_ROOT)/scripts/sparknet-distill-trainer.sh --help
 
 distill-doctor: ## Check the GPU/trainer prerequisites for a distillation run
 	@$(PY) "$(ROLE_ROOT)/services/sparknet-distill.py" doctor --config "$(DISTILL_CONFIG)" --state "$(DISTILL_STATE)"

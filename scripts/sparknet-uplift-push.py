@@ -90,7 +90,17 @@ def node_id() -> str:
 
 
 def _key() -> Any:
-    path = Path(os.environ.get("SPARKNET_NODE_KEY", "") or state_dir() / "keys" / "node.ed25519")
+    explicit = os.environ.get("SPARKNET_NODE_KEY", "").strip()
+    candidates = (
+        [Path(explicit)]
+        if explicit
+        else [
+            state_dir() / "keys" / "node.ed25519",
+            state_dir() / "keys" / "ed25519-node.key.b64",
+            state_dir() / "keys" / "identity.ed25519",
+        ]
+    )
+    path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
     impl = authz()
     if impl is None:
         raise PushError("shared/sparknet-authz.py not found")
@@ -276,6 +286,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"uplift: drained {count} outbox rows")
             return 0
         if args.kind == "snapshot":
+            if args.all:
+                pushed = 0
+                for collection in qdrant_collections(qdrant=args.qdrant):
+                    body, info = qdrant_snapshot(collection, qdrant=args.qdrant)
+                    manifest = {
+                        **info,
+                        "sha256": _sha256(body),
+                        "size": len(body),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    if args.dry_run:
+                        print(
+                            json.dumps({"kind": "snapshot", "manifest": manifest, "bytes": len(body)}, sort_keys=True)
+                        )
+                    elif send("snapshot", body, manifest, endpoint=args.endpoint):
+                        pushed += 1
+                print(f"uplift: pushed {pushed} collection snapshots")
+                return 0
             if args.file:
                 body = args.file.read_bytes()
                 info = {"collection": args.collection, "snapshot_name": args.file.name}

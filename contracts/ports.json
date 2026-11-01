@@ -410,8 +410,8 @@
       "protocol": "tcp/http",
       "runtime": "not-listening",
       "service": "vector-embed",
-      "status": "IMPLEMENTED ON THE QDRANT SUBSTRATE 2026-11-01 \u2014 the same signed /v1/query and /v1/health surface now loads scripts/sparknet-vector.py. The 2026-10-31 live evidence for the query/capability path remains valid; the Qdrant live re-verification is DoD: confirm: user.",
-      "runtime_why": "The development host opens nothing. The Master binds 10.100.0.1:4223 via sparknet-master-vector.service and the opt-in .venv-vector; the listener serves signed queries over the Qdrant fabric/shared collections. `runtime` describes this host, so it stays not-listening."
+      "status": "LIVE 2026-11-01 on Qdrant v1.20.0 \u2014 agx64 signed /v1/health 200 with fabric and shared, a fabric query returned contract passages, and a shared query returned the live share payload. The service is query-only; reindex is an operator action and no timer is installed.",
+      "runtime_why": "The development host opens nothing. On 2026-11-01 the live Master bound 10.100.0.1:4223 and serves the Qdrant fabric/shared collections through scripts/sparknet-vector.py. `runtime` describes this host, so it stays not-listening."
     },
     "4224": {
       "binds_to": "10.100.0.1",
@@ -478,9 +478,9 @@
       "overlay_only": true,
       "protocol": "tcp/http",
       "runtime": "not-listening",
-      "runtime_why": "master-node/services/sparknet-uplift-intake.py implements the listener and master-node/systemd/sparknet-uplift-intake.service stages it. This development host has no overlay, so 8091 is never bound here.",
+      "runtime_why": "The development host opens nothing. On 2026-11-01 the live Master bound 10.100.0.1:8091 and accepted signed agx64 uplifts. `runtime` describes this host, so it stays not-listening.",
       "service": "uplift-intake",
-      "status": "IMPLEMENTED 2026-11-01; live pair intake is DoD: confirm: user."
+      "status": "LIVE 2026-11-01 \u2014 agx64 pushed 41 inventory records (mirrored into agx32 uplift-inventory), 30 teacher traces and four Qdrant collection snapshots; one inventory snapshot restored into a scratch collection. The listener holds no key."
     }
   },
   "schema_version": "2.0",

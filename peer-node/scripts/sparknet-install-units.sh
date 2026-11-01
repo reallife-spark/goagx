@@ -75,8 +75,8 @@ shim_body() {
     firewall)   printf 'exec %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_VAULT_ROOT/scripts/sparknet-firewall.sh" ;;
     vault-provisioner) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-vault-provisioner.py" ;;
     admin-agent) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-admin-agent.py" ;;
-    inventory) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-inventory-agent.py" ;;
-    uplift-push) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/../scripts/sparknet-uplift-push.py" ;;
+    inventory) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "${SPARKNET_VECTOR_PYTHON:-$SPARKNET_VAULT_ROOT/../.venv-vector/bin/python}" "$SPARKNET_VAULT_ROOT/services/sparknet-inventory-agent.py" ;;
+    uplift-push) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "${SPARKNET_VECTOR_PYTHON:-$SPARKNET_VAULT_ROOT/../.venv-vector/bin/python}" "$SPARKNET_VAULT_ROOT/../scripts/sparknet-uplift-push.py" ;;
     telemetry-push) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-telemetry-push.py" ;;
     liveness-monitor) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-liveness-monitor.py" ;;
     checkpoint-anchor) printf 'exec %q %q %q "$@"' "$SPARKNET_VAULT_ROOT/scripts/sparknet-run" "$SPARKNET_PYTHON" "$SPARKNET_VAULT_ROOT/services/sparknet-checkpoint-anchor.py" ;;

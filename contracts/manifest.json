@@ -41,7 +41,7 @@
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "3539155a897af8392218ca601fc5098a364c6c9f5af209b9fb119c5bdb923f55"
+      "sha256": "aeddbb62ce06e6fcece4e99f97e8988fb42fc3e0493d8fc28314b13b77c24f09"
     },
     {
       "contract": "proposal-schema",

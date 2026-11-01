@@ -98,9 +98,11 @@ current: 23
   - [x] **23C — Distillation.** `services/sparknet-distill.py` builds a
     consented, redacted dataset, refuses a failed doctor, evaluates a candidate
     and can sign a `distillation_run` through the isolated signer.
-  - [ ] **23D — Live.** Deploy Qdrant on agx32, grant `model-uplift` at a new
-    registry sequence, ingest a real agx64 snapshot and run a real
-    teacher→student candidate. `DoD: confirm: user`.
+  - [x] **23D — Live.** Qdrant `v1.20.0` on agx32; registry sequence 7 grants
+    `model-uplift` and delivered 200; 8091 intake mirroring 41 inventory
+    records; four agx64 snapshots uploaded and one restored (40 points); a real
+    Qwen2.5-7B→Qwen2.5-1.5B LoRA run was signed (`run-20261101T101033Z-…`) and
+    its model card published. Raw vLLM KV capture remains open (root 81H).
   - **DoD**: master suite green; live legs `DoD: confirm: user`.
 
 ## Next

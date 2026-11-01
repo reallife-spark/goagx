@@ -286,10 +286,18 @@ class Intake:
         if not isinstance(rows, list) or len(rows) > 20000:
             raise Refusal(400, "malformed", "inventory must be a list of at most 20000 rows")
         self._write_jsonl(self.state / "inventory" / f"{node_id}.jsonl", rows)
+        mirrored = self.mirror_inventory(rows)
         self._manifest(
-            {"kind": "inventory", "node_id": node_id, "source": _bare(source), "rows": len(rows), "received_at": _iso()}
+            {
+                "kind": "inventory",
+                "node_id": node_id,
+                "source": _bare(source),
+                "rows": len(rows),
+                "mirrored": mirrored,
+                "received_at": _iso(),
+            }
         )
-        return {"ok": True, "rows": len(rows)}
+        return {"ok": True, "rows": len(rows), "mirrored": mirrored}
 
     def trace_batch(self, *, node_id: str, body: dict[str, Any], source: str) -> dict[str, Any]:
         rows = body.get("traces")

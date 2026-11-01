@@ -336,7 +336,18 @@ def push(records: list[dict[str, Any]], *, endpoint: str = DEFAULT_UPLIFT) -> tu
     http = load_http()
     if authz is None or http is None:
         return False, "shared/authz or shared/http missing"
-    key_path = state_dir() / "keys" / "node.ed25519"
+    key_path = next(
+        (
+            candidate
+            for candidate in (
+                state_dir() / "keys" / "node.ed25519",
+                state_dir() / "keys" / "ed25519-node.key.b64",
+                state_dir() / "keys" / "identity.ed25519",
+            )
+            if candidate.is_file()
+        ),
+        state_dir() / "keys" / "node.ed25519",
+    )
     if not key_path.is_file():
         return False, f"node key missing: {key_path}"
     try:
@@ -344,10 +355,32 @@ def push(records: list[dict[str, Any]], *, endpoint: str = DEFAULT_UPLIFT) -> tu
     except Exception as exc:
         return False, f"cannot load node key: {exc}"
     payload = {"schema": "sparknet-uplift/1", "node_id": node_id(), "captured_at": now_iso(), "inventory": records}
-    status, body = http.post_json(endpoint, "POST", "/api/v1/inventory", payload, private_key, timeout=20.0)
-    if 200 <= status < 300:
-        return True, f"pushed {len(records)} records"
-    return False, f"HTTP {status}: {body}"
+    body = json.dumps(payload, sort_keys=True).encode("utf-8")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    nonce = uuid.uuid4().hex
+    signature = authz.sign_bytes(private_key, http.request_message("POST", "/api/v1/inventory", body, stamp))
+    request = urllib.request.Request(
+        endpoint.rstrip("/") + "/api/v1/inventory",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Sparknet-Node-Id": node_id(),
+            "X-Sparknet-Timestamp": stamp,
+            "X-Sparknet-Nonce": nonce,
+            "X-Sparknet-Signature": signature,
+            "User-Agent": "sparknet-inventory/1",
+        },
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=20) as response:
+            response.read()
+            return 200 <= response.status < 300, f"pushed {len(records)} records"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"
+    except (urllib.error.URLError, OSError) as exc:
+        return False, f"transport-error: {exc}"
 
 
 def drain_outbox(endpoint: str = DEFAULT_UPLIFT) -> int:

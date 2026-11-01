@@ -175,22 +175,52 @@ def build_dataset(config: dict[str, Any], *, uplift: Path, state: Path) -> dict[
 
 def doctor(config: dict[str, Any]) -> dict[str, Any]:
     checks: dict[str, Any] = {}
-    for module in ("torch", "transformers", "peft", "trl"):
-        checks[module] = bool(importlib.util.find_spec(module))
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        checks["gpu"] = result.stdout.strip() if result.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError):
-        checks["gpu"] = None
-    checks["trainer"] = os.environ.get("SPARKNET_DISTILL_TRAINER", "")
+    trainer = os.environ.get("SPARKNET_DISTILL_TRAINER", "").strip()
+    if trainer:
+        # The live Master runs the trainer in the dedicated image: check the
+        # container's imports and CUDA, not the host interpreter's.
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--gpus",
+                    "all",
+                    "--entrypoint",
+                    "/usr/bin/python3",
+                    "sparknet-distill:dev",
+                    "-c",
+                    "import torch, transformers, peft; print(torch.cuda.is_available())",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            checks["container"] = result.returncode == 0 and "True" in result.stdout
+            checks["container_error"] = (result.stderr or "").strip()[-500:] if result.returncode else ""
+        except (OSError, subprocess.SubprocessError) as exc:
+            checks["container"] = False
+            checks["container_error"] = str(exc)
+        checks["gpu"] = "container"
+    else:
+        for module in ("torch", "transformers", "peft", "trl"):
+            checks[module] = bool(importlib.util.find_spec(module))
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            checks["gpu"] = result.stdout.strip() if result.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            checks["gpu"] = None
+        checks["container"] = all(checks[m] for m in ("torch", "transformers", "peft", "trl"))
+    checks["trainer"] = trainer
     checks["teacher"] = config.get("teacher_model_id", "")
     checks["student"] = config.get("student_base_model", "")
-    checks["ok"] = all(checks[m] for m in ("torch", "transformers", "peft", "trl")) and bool(checks["trainer"])
+    checks["ok"] = bool(checks.get("container")) and bool(trainer)
     return checks
 
 
@@ -257,22 +287,39 @@ def run(config: dict[str, Any], *, uplift: Path, state: Path, execute: bool, sig
     artifact_sha = ""
     if result.returncode == 0 and artifact.is_file():
         artifact_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    eval_metrics: dict[str, Any] = {}
+    metrics_path = root / "metrics.json"
+    if metrics_path.is_file():
+        try:
+            loaded = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                eval_metrics = loaded
+        except ValueError:
+            eval_metrics = {}
+    approved = result.returncode == 0 and float(eval_metrics.get("held_out_teacher_agreement", 0.0)) > 0.0
     record = {
         "run_id": run_id,
         "dataset_id": manifest["dataset_id"],
+        "family": str(config.get("family") or ""),
         "teacher_model_id": str(config.get("teacher_model_id") or ""),
         "teacher_sha256": str(config.get("teacher_sha256") or ""),
         "student_base_model": str(config.get("student_base_model") or ""),
         "student_base_sha256": str(config.get("student_base_sha256") or ""),
         "hyperparameters": plan["hyperparameters"],
-        "eval_metrics": {},
+        "eval_metrics": eval_metrics,
         "artifact_sha256": artifact_sha,
         "decided_by": os.environ.get("SPARKNET_OPERATOR", "operator"),
         "decided_at": now_iso(),
-        "approved": result.returncode == 0,
+        "approved": approved,
     }
-    if sign:
-        response = _signer_call({"op": "sign-distillation-run", "run": record}, socket_path=_signer_socket())
+    if sign and approved:
+        root_response = _signer_call({"op": "root-id"}, socket_path=_signer_socket())
+        if not root_response.get("ok"):
+            raise SystemExit(f"distill: signer refused root-id: {root_response.get('error')}")
+        response = _signer_call(
+            {"op": "sign-distillation-run", "root_id": root_response["root_id"], "run": record},
+            socket_path=_signer_socket(),
+        )
         if not response.get("ok"):
             raise SystemExit(f"distill: signer refused: {response.get('error')}")
         record = response["run"]
