@@ -1,7 +1,7 @@
 ---
 title: sparknet master-node Plan
-updated: 2026-10-31
-current: 10
+updated: 2026-11-01
+current: 23
 ---
 
 # sparknet master-node — Active Plan
@@ -84,6 +84,24 @@ current: 10
     `make test-all`; live units and cross-node delivery are
     `DoD: confirm: user`.
   - **Status: complete and live-verified on agx32 2026-10-31.** 8090 intake and the responder run; a real peer RFI was answered and installed; the admin console `feed`/`users` paths work; registry sequence 2 was re-signed and delivered. Master tests and bundle verify pass.
+
+## Step 23 — Qdrant Master store, uplift intake and distillation
+
+- [ ] **Step 23** — Run the Master's Qdrant-backed 4223 store, receive consented
+  uplift on 8091, and operate the same-family distillation scaffold.
+  - [x] **23A — 4223.** `services/sparknet-vector-serve.py` loads
+    `scripts/sparknet-vector.py`; only `sparknet-fabric` and
+    `sparknet-shared` are served. Local tests pass.
+  - [x] **23B — Uplift intake.** `services/sparknet-uplift-intake.py` verifies
+    overlay source, node signature, `model-uplift`, freshness and nonce, then
+    stores inventory, traces, snapshots and KV manifests. It holds no key.
+  - [x] **23C — Distillation.** `services/sparknet-distill.py` builds a
+    consented, redacted dataset, refuses a failed doctor, evaluates a candidate
+    and can sign a `distillation_run` through the isolated signer.
+  - [ ] **23D — Live.** Deploy Qdrant on agx32, grant `model-uplift` at a new
+    registry sequence, ingest a real agx64 snapshot and run a real
+    teacher→student candidate. `DoD: confirm: user`.
+  - **DoD**: master suite green; live legs `DoD: confirm: user`.
 
 ## Next
 

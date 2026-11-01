@@ -226,6 +226,34 @@
       "runtime": "not-verifiable-here",
       "runtime_why": "Not host-published, so there is nothing to observe from the host by design; the listener exists inside the container when the control profile is up.",
       "service": "node-control-metrics"
+    },
+    "6333": {
+      "bound_by": "node",
+      "compose_service": "qdrant",
+      "container_port": 6333,
+      "host_bind": "${SPARKNET_BIND_LOCAL:-127.0.0.1}",
+      "host_published": true,
+      "implementation_state": "implemented",
+      "note": "Qdrant HTTP API, loopback only. Open WebUI and the node-local vector CLI share it; never published on the LAN or overlay.",
+      "profile": "vector",
+      "protocol": "tcp/http",
+      "runtime": "not-listening",
+      "runtime_why": "This development host does not run the compose graph; the declaration is checked, not a live listener.",
+      "service": "qdrant"
+    },
+    "6334": {
+      "bound_by": "node",
+      "compose_service": "qdrant",
+      "container_port": 6334,
+      "host_bind": "${SPARKNET_BIND_LOCAL:-127.0.0.1}",
+      "host_published": true,
+      "implementation_state": "implemented",
+      "note": "Qdrant gRPC API, loopback only. Optional transport for a local client; HTTP is the default.",
+      "profile": "vector",
+      "protocol": "tcp/grpc",
+      "runtime": "not-listening",
+      "runtime_why": "This development host does not run the compose graph; the declaration is checked, not a live listener.",
+      "service": "qdrant"
     }
   },
   "ports": {
@@ -377,13 +405,13 @@
       "binds_to": "10.100.0.1",
       "bound_by": "master",
       "implementation_state": "implemented",
-      "note": "The fabric vector embeddings database: a single store the roles and their wiki skills use for semantic retrieval, administered by the Master. Overlay-only because the index is cluster knowledge, not a public corpus.",
+      "note": "The fabric vector embeddings database: a single Qdrant-backed store the roles and their wiki skills use for semantic retrieval, administered by the Master. Overlay-only because the index is cluster knowledge, not a public corpus. Only sparknet-fabric and sparknet-shared are served; uplift, inventory and training collections are never reachable here.",
       "overlay_only": true,
       "protocol": "tcp/http",
       "runtime": "not-listening",
       "service": "vector-embed",
-      "status": "LIVE 2026-10-31 \u2014 sparknet-node-0001 queried sparknet-node-0002 at 10.100.0.1:4223: health 200 with both collections, a shared query returned the explicit kb-share payload, and a fabric query returned contracts/share-protocol.md. The caller held cluster-dispatch (registry sequence 4). The service is query-only; reindex is an operator action and no timer is installed.",
-      "runtime_why": "The development host opens nothing. On 2026-10-31 the live Master bound 10.100.0.1:4223 via sparknet-master-vector.service and the opt-in .venv-vector; the listener serves signed /v1/query and /v1/health over the fabric and shared stamped collections. `runtime` describes this host, so it stays not-listening; `status` records the live pair."
+      "status": "IMPLEMENTED ON THE QDRANT SUBSTRATE 2026-11-01 \u2014 the same signed /v1/query and /v1/health surface now loads scripts/sparknet-vector.py. The 2026-10-31 live evidence for the query/capability path remains valid; the Qdrant live re-verification is DoD: confirm: user.",
+      "runtime_why": "The development host opens nothing. The Master binds 10.100.0.1:4223 via sparknet-master-vector.service and the opt-in .venv-vector; the listener serves signed queries over the Qdrant fabric/shared collections. `runtime` describes this host, so it stays not-listening."
     },
     "4224": {
       "binds_to": "10.100.0.1",
@@ -441,6 +469,18 @@
       "runtime": "not-listening",
       "runtime_why": "The daemon refuses to listen without an overlay address (peer-node/services/sparknet-guard-d.py:709-711, standalone mode). With wg0 absent it correctly declines to bind rather than falling back to a wildcard. This is the code working, not code missing \u2014 the distinction the previous boolean could not express.",
       "service": "guard"
+    },
+    "8091": {
+      "binds_to": "10.100.0.1",
+      "bound_by": "master",
+      "implementation_state": "implemented",
+      "note": "The Master uplift intake: peer->Master inventory, Qdrant snapshots, teacher traces and raw-KV manifests. Overlay-only and signed by the peer node key; the source must hold the peer-held model-uplift capability. It stores consented data for the training pipeline and never serves it to a user AI or to 4223.",
+      "overlay_only": true,
+      "protocol": "tcp/http",
+      "runtime": "not-listening",
+      "runtime_why": "master-node/services/sparknet-uplift-intake.py implements the listener and master-node/systemd/sparknet-uplift-intake.service stages it. This development host has no overlay, so 8091 is never bound here.",
+      "service": "uplift-intake",
+      "status": "IMPLEMENTED 2026-11-01; live pair intake is DoD: confirm: user."
     }
   },
   "schema_version": "2.0",

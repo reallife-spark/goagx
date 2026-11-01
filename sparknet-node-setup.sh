@@ -65,7 +65,7 @@ Options:
                         env-file, so switching platforms never inherits
                         the other's base/model lines)
   --engine vllm|stub   model engine (default vllm; stub = CPU-only OpenAI stub, no GPU/model)
-  --profiles A,B,C     compose profiles to enable: kv control webui embed rerank audio ingest backup opencode
+  --profiles A,B,C     compose profiles to enable: kv vector control webui embed rerank audio ingest backup opencode
   --master-pub KEY     the elected Master's Ed25519 public key (base64) or a file
                        holding it; joins the node to the fabric instead of running
                        open. With --registry and no key, the key is read from the

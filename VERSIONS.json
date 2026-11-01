@@ -4,12 +4,12 @@
   "platform": "agx",
   "sparknet_repo": "https://github.com/reallife-spark/sparknet.git",
   "sparknet_sha": "a4fffb3e0d1be109c0936edeaed7245fe533b2e2",
-  "sparknet_from_git": "HEAD",
+  "sparknet_from_git": "worktree",
   "gospark_repo": "https://github.com/reallife-spark/goSpark.git",
   "gospark_sha": "91a6ef9ad28a0f4daa3a33eb1e80a026274125fa",
   "l4t_base": "nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3",
   "vllm_git_ref": "v0.2.7",
   "opencode_version": "1.18.35",
   "nats_version": "2.14.2",
-  "published": "2026-11-01T03:39:14Z"
+  "published": "2026-11-01T05:39:13Z"
 }

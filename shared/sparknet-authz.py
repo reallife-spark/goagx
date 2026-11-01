@@ -69,6 +69,7 @@ KNOWN_CAPABILITIES = frozenset(
         "cluster-serve",
         "admin-supervise",
         "cross-department-share",
+        "model-uplift",
     }
 )
 
@@ -886,6 +887,59 @@ def admin_request_message(request: dict[str, Any]) -> bytes:
         )
     projected = {field: request.get(field) for field in sorted(ADMIN_REQUEST_FIELDS)}
     return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+# --- distillation runs --------------------------------------------------------
+
+
+#: Fields of a signed same-family distillation run. The run record binds the
+#: dataset, teacher/student identities, hyperparameters, evaluation and artifact
+#: digest, so a later model card cannot claim a run that did not happen.
+DISTILLATION_RUN_FIELDS = (
+    "run_id",
+    "dataset_id",
+    "teacher_model_id",
+    "teacher_sha256",
+    "student_base_model",
+    "student_base_sha256",
+    "hyperparameters",
+    "eval_metrics",
+    "artifact_sha256",
+    "decided_by",
+    "decided_at",
+    "approved",
+)
+
+DISTILLATION_RUN_REQUIRED = (
+    "run_id",
+    "dataset_id",
+    "teacher_model_id",
+    "student_base_model",
+    "artifact_sha256",
+    "decided_by",
+    "decided_at",
+)
+
+
+def distillation_run_message(run: dict[str, Any]) -> bytes:
+    """Canonical bytes signed for a distillation run record."""
+    if not isinstance(run, dict):
+        raise AuthzError("distillation run must be an object")
+    missing = [field for field in DISTILLATION_RUN_REQUIRED if not run.get(field)]
+    if missing:
+        raise AuthzError(f"distillation run missing required field(s): {', '.join(missing)}")
+    projected = {field: run.get(field) for field in DISTILLATION_RUN_FIELDS}
+    body = json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return b"sparknet-distillation-run/1\n" + body
+
+
+def sign_distillation_run(run: dict[str, Any], private_key: Any, *, signed_at: str | None = None) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        raise AuthzError("distillation run must be an object")
+    signed = dict(run)
+    signed["signature_b64"] = sign_bytes(private_key, distillation_run_message(run))
+    signed["signed_at"] = signed_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return signed
 
 
 # --- session grants ------------------------------------------------------------

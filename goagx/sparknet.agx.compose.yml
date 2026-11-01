@@ -326,6 +326,27 @@ services:
       - "${SPARKNET_BIND_API:-0.0.0.0}:3000:8080"
     restart: unless-stopped
 
+  # Qdrant, the node's vector store. Loopback only; the fabric-facing surface
+  # remains the Master's signed 4223 listener.
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_TAG:-v1.20.0}
+    profiles: ["vector"]
+    container_name: sparknet-qdrant
+    environment:
+      QDRANT__SERVICE__API_KEY: ${SPARKNET_QDRANT_API_KEY:?set at deploy time; do not commit}
+      QDRANT__SERVICE__ENABLE_TLS: "false"
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - type: bind
+        source: ${SPARKNET_STATE_HOST:-../peer-node/.state}/qdrant
+        target: /qdrant/storage
+    ports:
+      - "${SPARKNET_BIND_LOCAL:-127.0.0.1}:6333:6333"
+      - "${SPARKNET_BIND_LOCAL:-127.0.0.1}:6334:6334"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   # --- knowledge profiles (opt-in) -------------------------------------------
   #
   # The goSpark knowledge binaries as node services. Identical to the Spark

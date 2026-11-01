@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "contract": "node-ai-stack",
-  "description": "A node's own AI stack, as committed config: its own chat surface (Open WebUI) standing on its own model server (infra Ollama) and its own vector store (ChromaDB), the declarative slice of adoption item 3 in CLUSTER_INFERENCE_DESIGN.md. Read by peer-node/tests/test_node_ai_stack.py, which fails the build if the committed topology stops being the declared surface the design requires. Cluster fan-out is NOT here: accepting a signed subtask belongs to the task ingress + cluster client (item 5), so nothing in this file can be a vector for delegated inference.",
+  "description": "A node's own AI stack, as committed config: its own chat surface (Open WebUI) standing on its own model server (infra Ollama) and its own vector store (Qdrant), the declarative slice of adoption item 3 in CLUSTER_INFERENCE_DESIGN.md. Read by peer-node/tests/test_node_ai_stack.py, which fails the build if the committed topology stops being the declared surface the design requires. Cluster fan-out is NOT here: accepting a signed subtask belongs to the task ingress + cluster client (item 5), so nothing in this file can be a vector for delegated inference.",
   "authored": "2026-10-10",
   "source": "CLUSTER_INFERENCE_DESIGN.md §Docker packaging",
   "status": "declared, not deployed",
@@ -9,12 +9,13 @@
   "topology": {
     "services": ["open-webui"],
     "compose_file": "peer-node/configs/ai-stack/docker-compose.yml",
+    "vector_compose_file": "peer-node/configs/ai-stack/docker-compose.qdrant.yml",
     "bind_host": "0.0.0.0 (host network namespace; PORT=8181)",
     "published_ports": ["0.0.0.0:8181 (host netns)"],
     "network_mode": "host — the surface must reach the node's loopback-only dispatch bridge (127.0.0.1:4096); a bridge-network container cannot reach a loopback-only host listener (host-gateway resolves to the docker0 gateway, not 127.0.0.1)",
     "model_server": "the node's infra Ollama, http://127.0.0.1:11434 (never a remote node's overlay address)",
-    "vector_store": "the node's infra ChromaDB, http://127.0.0.1:18000 (its published port)",
-    "why_published": "Operator decision (2026-10-10), network choice revised 2026-10-11: the chat surface answers on the node's LAN and overlay addresses. Binding is not the confidentiality control any more — the SPARKNET-FW host firewall restricts 8181/11434/18000 to loopback + LAN + overlay + Docker bridge subnets, so the exposure is a decision with a rule attached, not an omission."
+    "vector_store": "the node's own Qdrant server, http://127.0.0.1:6333 (loopback only; declared in docker-compose.qdrant.yml)",
+    "why_published": "Operator decision (2026-10-10), network choice revised 2026-10-11: the chat surface answers on the node's LAN and overlay addresses. Binding is not the confidentiality control any more — the SPARKNET-FW host firewall restricts 8181/11434 to loopback + LAN + overlay + Docker bridge subnets, while Qdrant stays loopback-only on 6333/6334, so the exposure is a decision with a rule attached, not an omission."
   },
 
   "gpu": {
@@ -26,7 +27,7 @@
     "vault": "the only authored knowledge base; readable only through the grant-checked bridge",
     "open_webui_rag": {
       "RAG_INGESTION_ENABLED": "true",
-      "VECTOR_DB": "chroma",
+      "VECTOR_DB": "qdrant",
       "corpus": "structure-only — schema, taxonomy, charters and contracts; never the vault's personal pages",
       "excluded": ["00_System/user.md", "**/user-env-manifest.json", "**/secrets-index.json", "02_Daily/**", "03_Sources/**", "_staging/**", "_archives/**", ".state/**", "manifests/keys/**", "*.ed25519", ".env"],
       "builder": "scripts/sparknet-rag-corpus.py",
@@ -49,7 +50,7 @@
     "bridge_key": "OPENAI_API_KEYS expands a deploy-time signed grant ($SPARKNET_WEBUI_BRIDGE_GRANT); no token is committed and the compose fails loudly while it is unset.",
     "approve_deny": "a permission request surfaces as an Approve/Deny card and resolves through POST /session/:id/permissions/:permissionID on the dispatch bridge (peer PLAN Step 5 DoD 2); the decision is recorded in the grant-keyed session.",
     "session_vault_access": "POST /session/:id/vault-access toggles per-session 'all vault tools' (mode: all|per-tool). 'all' drops only the presenting grant's own spent nonce so the grant keeps working in that session until it expires; scope, expiry, signature and per-mutation audit are unchanged. Default stays one-shot.",
-    "rag": "enabled, structure-only corpus, backed by the node's own ChromaDB (peer PLAN Step 5 DoD 4, operator decision 2026-10-10)."
+    "rag": "enabled, structure-only corpus, backed by the node's own Qdrant server (peer PLAN Step 5 DoD 4, vector-store decision 2026-11-01)."
   },
 
   "admin_federation": {
@@ -90,7 +91,8 @@
   "network_boundary": {
     "host_firewall": "SPARKNET-FW (iptables DOCKER-USER + INPUT, ip6tables INPUT) on each node",
     "allowed_sources": ["loopback", "192.168.178.0/24 (LAN)", "10.100.0.0/24 (wg1 overlay)", "172.16.0.0/12 (docker bridges)", "link-local"],
-    "exposed_ports": ["8181 (webui)", "11434 (ollama)", "18000 (chroma)"],
+    "exposed_ports": ["8181 (webui)", "11434 (ollama)"],
+    "loopback_only_ports": ["6333 (qdrant http)", "6334 (qdrant grpc)"],
     "why": "Publishing on 0.0.0.0 also publishes on the node's global IPv6. The firewall keeps the fabric fully functional (overlay, LAN, loopback, docker nets, wg1) while blocking direct public-internet reach to those ports."
   },
 

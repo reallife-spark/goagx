@@ -1,7 +1,7 @@
 ---
 title: sparknet peer-node Plan
-updated: 2026-10-31
-current: done
+updated: 2026-11-01
+current: 14
 ---
 
 # sparknet peer-node — Active Plan
@@ -80,6 +80,23 @@ current: done
     context-propagation test and the peer suite are green; `make bundle-verify
     ROLE=peer` passes; `agx64` live legs are `DoD: confirm: user`.
   - **Status: complete and live-verified on agx64 2026-10-31.** Context is in WebUI RAG, per-user KBs, vLLM precontext and OpenCode; `vault.rfi` completed a real request→answer→inbox round trip; telemetry/checkpoint/self-healing timers run; peer suite and bundle verify pass.
+
+## Step 14 — Qdrant node surface, inventory and uplift
+
+- [ ] **Step 14** — Replace the node's ChromaDB with a loopback Qdrant server,
+  project users/models/usage into `sparknet-inventory`, and push consented
+  uplift data through the durable outbox.
+  - [x] **14A — AI stack.** `docker-compose.qdrant.yml` declares a pinned,
+    loopback-only Qdrant; Open WebUI uses `VECTOR_DB=qdrant`; the firewall and
+    manifest no longer protect ChromaDB. Local tests pass.
+  - [x] **14B — Inventory.** `services/sparknet-inventory-agent.py` normalises
+    users/models/KBs/usage and never stores prompt text in Qdrant.
+  - [x] **14C — Uplift.** `scripts/sparknet-uplift-push.py` signs inventory,
+    trace, snapshot and KV pushes and spools failures.
+  - [ ] **14D — Live.** Migrate agx64, reindex Open WebUI KBs, verify per-file
+    and per-KB retrieval, upload a real snapshot, and keep the old Chroma volume
+    for 14 days. `DoD: confirm: user`.
+  - **DoD**: peer suite green; live legs `DoD: confirm: user`.
 
 ## Next
 

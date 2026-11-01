@@ -120,18 +120,35 @@ def test_open_webui_uses_this_nodes_own_ollama():
     )
 
 
-def test_open_webui_rag_is_chroma_backed_and_structure_scoped():
+def test_open_webui_rag_is_qdrant_backed_and_structure_scoped():
     webui = _compose_services()["open-webui"]
     env = webui.get("environment", {})
     assert env.get("RAG_INGESTION_ENABLED") == "true", (
-        "the operator enabled Open WebUI RAG (2026-10-10), backed by the node's own ChromaDB"
+        "the operator enabled Open WebUI RAG (2026-10-10), now backed by the node's own Qdrant"
     )
-    assert env.get("VECTOR_DB") == "chroma"
-    assert env.get("CHROMA_HTTP_HOST") == "127.0.0.1"
-    assert env.get("CHROMA_HTTP_PORT") == "18000"
+    assert env.get("VECTOR_DB") == "qdrant"
+    assert env.get("QDRANT_URI") == "http://127.0.0.1:6333"
+    assert "CHROMA_HTTP_HOST" not in env, "the Chroma transport must not survive the migration"
     manifest = _load(MANIFEST)["knowledge_bases"]["open_webui_rag"]
     assert manifest["corpus"].startswith("structure-only"), manifest["corpus"]
     assert "00_System/user.md" in manifest["excluded"], "personal pages must be excluded from the corpus"
+
+
+def test_qdrant_compose_is_loopback_only_and_keyed():
+    qdrant_compose = STACK_DIR / "docker-compose.qdrant.yml"
+    services = yaml.safe_load(qdrant_compose.read_text())["services"]
+    assert set(services) == {"qdrant"}
+    qdrant = services["qdrant"]
+    ports = qdrant.get("ports", [])
+    assert ports == ["127.0.0.1:6333:6333", "127.0.0.1:6334:6334"], (
+        "Qdrant is a node-local store; exposing it on 0.0.0.0 or the overlay "
+        f"would bypass the signed 4223 surface: {ports}"
+    )
+    env = qdrant.get("environment", {})
+    key = env.get("QDRANT__SERVICE__API_KEY", "")
+    assert key.startswith("${SPARKNET_QDRANT_API_KEY:"), key
+    assert "do not commit" in key
+    assert qdrant.get("volumes"), "the index must survive a container recreation"
 
 
 # --- Step 5: the node's agents as the Open WebUI surface ----------------------
@@ -269,13 +286,15 @@ def test_compose_config_parses_when_docker_is_available(tmp_path):
         pytest.skip("docker not on PATH; the file-reading assertions above still apply")
     env = dict(__import__("os").environ)
     env["SPARKNET_WEBUI_BRIDGE_GRANT"] = "placeholder-grant"
-    result = subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE), "config", "--quiet"],
-        cwd=ROLE_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, f"docker compose rejects the ai-stack file:\n{result.stdout}\n{result.stderr}"
+    env["SPARKNET_QDRANT_API_KEY"] = "placeholder-qdrant-key"
+    for compose in (COMPOSE, STACK_DIR / "docker-compose.qdrant.yml"):
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose), "config", "--quiet"],
+            cwd=ROLE_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode == 0, f"docker compose rejects {compose.name}:\n{result.stdout}\n{result.stderr}"

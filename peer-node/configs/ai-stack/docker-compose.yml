@@ -4,16 +4,16 @@
 # server and its own vector store — the Master is a node like the others for its
 # own prompts. This file is the declarative slice of adoption item 3 in
 # CLUSTER_INFERENCE_DESIGN.md: configured here so it survives a redeploy, and
-# deployed by joining the node's own `~/infra` compose stack (which already runs
-# Ollama on `0.0.0.0:11434` and ChromaDB on `0.0.0.0:18000`), so this slice never
-# declares a second model server or a second vector store — a node answers from
-# its own.
+# deployed by joining the node's own `~/infra` compose stack (Ollama on
+# `0.0.0.0:11434`) and the Qdrant store declared in docker-compose.qdrant.yml,
+# so this slice never declares a second model server or a second vector store —
+# a node answers from its own.
 #
 # Network (operator decision, 2026-10-11): Open WebUI shares the HOST network
 # namespace. The node's dispatch bridge binds loopback only (`127.0.0.1:4096`),
 # and a bridge-network container cannot reach a loopback-only host listener
 # (`host-gateway` resolves to the docker0 gateway, not `127.0.0.1`). Host
-# networking lets the surface reach the bridge, Ollama and ChromaDB all on
+# networking lets the surface reach the bridge, Ollama and Qdrant all on
 # `127.0.0.1` without ever widening the bridge's bind — the loopback-only
 # property is exactly what keeps the agent surface off the wire.
 #
@@ -33,8 +33,8 @@ name: sparknet-node-ai-stack
 
 services:
   # The node's own chat surface, on the host network so it reaches the node's
-  # loopback-only dispatch bridge. Ollama and ChromaDB are the node's infra
-  # containers, both reachable on `127.0.0.1` through their published ports.
+  # loopback-only dispatch bridge. Ollama is the node's infra container and
+  # Qdrant is declared beside this file; both are reachable on `127.0.0.1`.
   open-webui:
     image: ghcr.io/open-webui/open-webui:${WEBUI_TAG:-v0.12.2}
     container_name: sparknet-webui
@@ -91,15 +91,21 @@ services:
       # not a bridge agent: chat still answers even if the bridge grant lapses,
       # and the node's agents stay selectable via the filter above.
       DEFAULT_MODELS: "llama3.2:latest"
-      # Knowledge comes from the node's own ChromaDB, but only a STRUCTURE-ONLY
-      # corpus is ever ingested (schema, taxonomy, charters, contracts) — never
-      # the vault's personal pages (00_System/user.md, 02_Daily, 03_Sources,
-      # .state). The corpus builder is scripts/sparknet-rag-corpus.py.
+      # Knowledge comes from the node's own Qdrant server, but only a
+      # STRUCTURE-ONLY corpus is ever ingested (schema, taxonomy, charters,
+      # contracts) — never the vault's personal pages (00_System/user.md,
+      # 02_Daily, 03_Sources, .state). The corpus builder is
+      # scripts/sparknet-rag-corpus.py.
       RAG_INGESTION_ENABLED: "true"
-      VECTOR_DB: "chroma"
-      # ChromaDB is the node's infra container, published on 127.0.0.1:18000.
-      CHROMA_HTTP_HOST: "127.0.0.1"
-      CHROMA_HTTP_PORT: "18000"
+      VECTOR_DB: "qdrant"
+      # Qdrant is declared in docker-compose.qdrant.yml and bound to loopback.
+      # The key is deploy-time; no secret is committed. Open WebUI persists
+      # ConfigVar values after first boot, so the migration runbook must clear
+      # a stale VECTOR_DB/QDRANT_URI from an existing database before relying
+      # on these values.
+      QDRANT_URI: "http://127.0.0.1:6333"
+      QDRANT_API_KEY: "${SPARKNET_QDRANT_API_KEY:?set at deploy time; do not commit}"
+      QDRANT_ON_DISK: "true"
     volumes:
       - open-webui-data:/app/backend/data
 
