@@ -51,3 +51,5 @@ Validate the compose without pulling anything:
 make -C ../../.. ai-stack-config   # or, from the peer role root:
 make ai-stack-config
 ```
+
+Qdrant is deployed from `docker-compose.qdrant.yml`; generate `SPARKNET_QDRANT_API_KEY` under the node state dir at 0600 and export it for compose. The API key is never committed.

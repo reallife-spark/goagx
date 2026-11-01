@@ -79,7 +79,10 @@ def http() -> Any:
 
 def state_dir() -> Path:
     value = os.environ.get("SPARKNET_STATE_DIR", "").strip()
-    return Path(value) if value else ROLE_ROOT / ".state"
+    if value:
+        return Path(value)
+    peer = ROLE_ROOT / "peer-node" / ".state"
+    return peer if (ROLE_ROOT / "peer-node").is_dir() else ROLE_ROOT / ".state"
 
 
 def node_id() -> str:
@@ -138,6 +141,22 @@ def _manifest(extra: dict[str, Any]) -> str:
 
 def _sha256(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
+
+
+def qdrant_collections(*, qdrant: str = DEFAULT_QDRANT) -> list[str]:
+    key = os.environ.get("SPARKNET_QDRANT_API_KEY", "").strip()
+    headers = {"api-key": key} if key else {}
+    request = urllib.request.Request(f"{qdrant.rstrip('/')}/collections", headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=TIMEOUT) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    rows = payload.get("result", {}).get("collections") if isinstance(payload, dict) else None
+    collections = []
+    for row in rows or []:
+        name = row.get("name") if isinstance(row, dict) else None
+        if name and name != "sparknet-meta":
+            collections.append(str(name))
+    return sorted(collections)
 
 
 def qdrant_snapshot(collection: str, *, qdrant: str = DEFAULT_QDRANT) -> tuple[bytes, dict[str, Any]]:
@@ -244,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("kind", choices=("inventory", "trace", "snapshot", "kv", "drain"))
     parser.add_argument("--file", type=Path)
     parser.add_argument("--collection", default="sparknet-peer")
+    parser.add_argument("--all", action="store_true", help="snapshot every non-meta Qdrant collection")
     parser.add_argument("--model", default="")
     parser.add_argument("--architecture", default="")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)

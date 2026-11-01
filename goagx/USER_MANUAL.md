@@ -52,7 +52,7 @@ The fabric ships **one node contract** on **two platforms**:
 | Image | `../spark.docker` | `sparknet.agx.docker` |
 | Compose | `../spark.compose.yml` | `sparknet.agx.compose.yml` |
 
-The contract is identical: the same 14 services, the same container names,
+The contract is identical: the same 15 services, the same container names,
 the same profiles, the same published ports, the same env-key surface, the
 same precontext and RAG paths, the same `--engine stub` smoke. The *engine
 underneath* differs, and only that.
@@ -239,7 +239,7 @@ bundle tarball, the precontext builder, the audio shim, and the entrypoint at
 
 ## 7. The compose surface
 
-`sparknet.agx.compose.yml` declares the **same 14 services** as the Spark
+`sparknet.agx.compose.yml` declares the **same 15 services** as the Spark
 compose, with the same names, container names, profiles and published ports:
 
 `nats` · `vllm` · `vllm-embed` · `vllm-rerank` · `vllm-audio` · `compute` ·
@@ -419,7 +419,7 @@ make goagx-drift-check   # the published distribution still matches this tree
 ```
 
 The AGX surface has its own dedicated test in the fabric suite, which
-asserts the parity with the Spark image: the same 14 services, the same
+asserts the parity with the Spark image: the same 15 services, the same
 container names, the same profiles, the same published ports, and the same
 env-key surface. A change that drifts the two platforms apart fails there
 rather than on an Xavier.

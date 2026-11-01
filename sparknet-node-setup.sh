@@ -256,6 +256,12 @@ VLLM_SHM_SIZE=${VLLM_SHM_SIZE:-4gb}"
     chmod 600 "$secret"
   fi
   local secret_val; secret_val="$(cat "$secret")"
+  local qdrant_secret="$NODE_STATE/qdrant.api.key"
+  if [ ! -s "$qdrant_secret" ]; then
+    head -c 32 /dev/urandom | base64 | tr -d '\n' > "$qdrant_secret"
+    chmod 600 "$qdrant_secret"
+  fi
+  local qdrant_val; qdrant_val="$(cat "$qdrant_secret")"
 
   umask 077
   cat > "$ENV_FILE" <<EOF
@@ -282,6 +288,10 @@ NATS_IMAGE_TAG=${NATS_IMAGE_TAG:-2.14.2-alpine}
 WEBUI_TAG=${WEBUI_TAG:-v0.12.2}
 SPARKNET_MASTER_PUB=${JOIN_MASTER_PUB:-}
 GOSPARK_REGISTRY_FILE=${JOIN_REGISTRY_PATH:-}
+SPARKNET_QDRANT_URL=${SPARKNET_QDRANT_URL:-http://127.0.0.1:6333}
+SPARKNET_QDRANT_API_KEY=$qdrant_val
+QDRANT_TAG=${QDRANT_TAG:-v1.20.0}
+SPARKNET_UPLIFT_ENDPOINT=${SPARKNET_UPLIFT_ENDPOINT:-http://10.100.0.1:8091}
 # Reflex is local-only: a local reranker/LLM, or the Master's broker, which
 # answers locally too. There is no egress path and no credential. No new
 # published port.

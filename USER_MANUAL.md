@@ -452,7 +452,7 @@ search helper is `make nv-search q="…"`.
 
 ### 7.2 The compose graph
 
-`spark.compose.yml` declares 14 services. The AGX compose declares the same 14
+`spark.compose.yml` declares 15 services. The AGX compose declares the same 15
 with the same names, container names, profiles and published ports — parity is
 asserted by `tests/test_agx_node.py`.
 
