@@ -1,7 +1,7 @@
 ---
 title: sparknet peer-node Plan
 updated: 2026-10-31
-current: 11
+current: done
 ---
 
 # sparknet peer-node — Active Plan
@@ -27,7 +27,7 @@ current: 11
 
 ## Step 11 — Per-user knowledge vaults (`peer-<user_id>`) and user KBs
 
-- [ ] **Step 11** — Every approved Open WebUI user gets a copy of the
+- [x] **Step 11** — Every approved Open WebUI user gets a copy of the
   `peer-node` knowledge-vault slice at `/srv/sparknet/knowledge/peer-<user_id>/`,
   created on `pending` → `user`, connected to a KB they own and grow.
   - **DoD**: (1) the provisioner watches `GET /api/v1/users/` with the node admin
@@ -38,7 +38,12 @@ current: 11
     vault markup and is the default model's `meta.knowledge`; (4) a digest pass
     re-embeds changed pages; (5) `master-<id>` stays inactive on a peer;
     (6) tests, `contract-test`, `lint` and `bundle-verify` are green.
-  - **Status**: code and unit are built; existing approved users were provisioned on `agx64` on 2026-10-31, with CONTEXT and self-healing indexed into their KBs. A fresh signup → Accept → provision cycle remains `DoD: confirm: user`.
+  - **Status: complete 2026-10-31.** A disposable live account
+    (`026a5abd-659f-44dc-acba-b9c6a409404f`) moved `pending` → `user` after
+    Master approval; the provisioner created 26 files and KB
+    `6c6198bf-2462-4c1c-964c-f2349fe1485f`; deletion removed the user, vault,
+    KB/model and state record. Tests cover the slice, KB grant/model wiring and
+    digest path; `make test-all` is green.
 
 ## Step 12 — Node admin agent: auth events and pending-signup supervision
 

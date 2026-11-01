@@ -34,9 +34,10 @@ Updated: 2026-10-31
   admin console `feed` and `users` paths work over `admin-supervise`; registry
   sequence 2 was re-signed under the current envelope and delivered. The peer
   entry now carries `admin-supervise`.
-- **Open items**: Master Steps 10–12 live legs, `4221`/`4223`, Phase 9's
-  destructive legs, and a fresh signup→approval cycle on the peer remain open or
-  spec-only. Step 8 live containment was verified on `agx32` 2026-10-28; Step 9
+- **Open items**: Master Steps 10–12 live legs, Phase 9's destructive legs, and
+  the live 4203/three-node share transport remain open. 4201/4202, 4220
+  (read-only git), 4221 (read-only files), 4222 (status/dry-run) and 4223 are
+  live on the pair (2026-10-31); the 4203 queue is built, not enabled. Step 8 live containment was verified on `agx32` 2026-10-28; Step 9
   live arming remains operator-confirmed.
 - **Knowledge flow**: a signed RFI answer is the only Master→peer knowledge
   channel. Registry, approvals, telemetry and admin requests are not knowledge;

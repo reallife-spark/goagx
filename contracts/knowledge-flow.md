@@ -25,9 +25,9 @@ authoritative fabric corpus. Neither property is allowed to leak into the other.
 | RFI request | peer → Master | `POST /api/v1/rfi-request` on peer intake, `8090` | Authenticated overlay; registry fingerprint match | A question and a scope allow-list | Authority, a capability request, a write | Route implemented; peer client built in the user-node step |
 | Telemetry | peer → Master | `POST /api/v1/telemetry` on peer intake, `8090` | Authenticated overlay; registry fingerprint match | Status, metrics, liveness, checkpoints, inbox alerts | Authority, knowledge answers, a write path | Implemented; units staged |
 | Admin request | Master → peer | `POST /admin/<action>` on the bridge, `4096` | Master signature + `admin-supervise` in the peer's registry | User, role, KB and chat administration | Vault content, knowledge answers, a signature | Implemented; current pair `DoD: confirm: user` |
-| Share / proposal | peer ↔ peer | `4201` share intake, `4202` session transfer | Both nodes verify the share grant; Master ratifies at `n ≥ 3` | A bounded read or copy, or a proposal bundle | Authority, a protected-file write, a registry edit | Engine implemented; listeners `DoD: confirm: user` |
-| Shared file share | Master → peer | `4221` file-share | Overlay + contract when built | Shared fabric artifacts | Personal pages, keys, live state | Spec-only |
-| Shared vector DB | Master → peer | `4223` vector-embed | Overlay + signed request + registry capability when built | Top-K from the allow-listed fabric corpus | Personal pages, a vector the caller supplied, authority | Spec-only |
+| Share / proposal | peer ↔ peer | `4201` share intake, `4202` session transfer | Both nodes verify the share grant; Master ratifies at `n ≥ 3` | A bounded read or copy, or a proposal bundle | Authority, a protected-file write, a registry edit | Implemented; live pair 2026-10-31 |
+| Shared file share | Master → peer | `4221` file-share | Overlay + signed request + `p2p-sync` | Shared fabric artifacts | Personal pages, keys, live state | Implemented; live pair 2026-10-31 |
+| Shared vector DB | Master → peer | `4223` vector-embed | Overlay + signed request + `cluster-dispatch`/`cluster-serve` | Top-K from `sparknet-fabric` or explicitly shared `sparknet-shared` | Personal pages, a caller-supplied vector, authority | Implemented; live pair 2026-10-31 |
 | Local vault / KB | node-local | Filesystem, Open WebUI KB, ChromaDB | User key for signed notes; grant for agent writes | The user's own knowledge | Authority, another user's private KB | Implemented; live proof on the retired pair |
 | Context pack | build-time, node-local | `CONTEXT.md` in the role bundle, precontext, OpenCode instructions | Repository review + `make context-check` | Role purpose, boundaries, channel map, self-healing rules | Secrets, live status, personal pages | Built with this change |
 
@@ -41,7 +41,8 @@ authoritative fabric corpus. Neither property is allowed to leak into the other.
 3. **Personal pages never enter a shared corpus.** `NODE_ROOTS` and
    `FABRIC_ROOTS` are allow-lists; `00_System`, `02_Daily`, `03_Sources`,
    `sessions`, `_raw`, `_staging`, keys and `MEMORY.md` are excluded. The shared
-   4223 corpus is the `fabric` allow-list, never the whole tree.
+   4223 service serves the `fabric` allow-list and a `shared` collection built
+   only from `01_Inbox/share-*` payloads, never the whole tree.
 4. **Knowledge arrival is recorded.** An RFI answer gets an `inbox_acceptance`
    block. A share gets signed transition events. A telemetry report is spooled.
    A local write is signed. An unrecorded arrival is a fault, not a convenience.

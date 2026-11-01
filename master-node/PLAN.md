@@ -36,7 +36,15 @@ current: 10
     duplicate/expired/unknown-grant refusals, tests through the real signer, a
     staged `4203` listener. Live listener and a peer round trip are
     `DoD: confirm: user`.
-  - **Status**: code complete 2026-10-29; no live listener.
+  - **Status**: code complete 2026-10-29. On 2026-10-31 a signed multi-key
+    listener and a durable human-approval queue were added; the listener queues
+    but never signs, and only `--approve/--refuse` reaches the isolated signer.
+    Tests cover key ring, key/node binding, restart and no-auto-ratify. No unit
+    is enabled; a live peer round trip remains `DoD: confirm: user`. The
+    three-node preparation is in `docs/share-ratification-live.md`; the unit is
+    rendered, never enabled on the pair. No third host exists yet. On agx32 the
+    unit is installed **disabled/inactive** (state 0700, key dir peer-only,
+    port 4203 unbound) as the two-node posture.
 
 ## Step 11 — Evidence capture and review repository
 

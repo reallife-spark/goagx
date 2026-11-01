@@ -29,7 +29,7 @@
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "2a0ae00f26b1fe30bcbf43be22c63a9e0af39c25f238b70c875ae07fb2842d4a"
+      "sha256": "09ee7ce484abee29a6903cdb7c77b220638356868660a54c3d8299bf1f296ee9"
     },
     {
       "contract": "proposal-schema",
@@ -251,25 +251,25 @@
     },
     "4220": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
+      "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "git-repo"
     },
     "4221": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
+      "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "file-share"
     },
     "4222": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
+      "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "nat-gateway"
     },
     "4223": {
       "bound_by": "master",
-      "implementation_state": "spec-only",
+      "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "vector-embed"
     },

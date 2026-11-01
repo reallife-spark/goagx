@@ -38,16 +38,17 @@ Updated: 2026-10-31
 - **Live on agx64 (2026-10-31)**: vault provisioner and admin agent active,
   telemetry/liveness/checkpoint/vault-health timers active, RFI request/answer
   round trip and bridge `vault.rfi` verified, registry sequence 2 installed,
-  admin federation feed/users verified. A fresh signup→approval cycle is the
-  remaining Step 11 leg.
+  admin federation feed/users verified. A disposable signup→approval→KB→
+  provisioning→deletion cycle was verified on 2026-10-31 and fully cleaned.
 - **User key was re-keyed on 2026-10-31** after a deployment mishap deleted
   `.state/keys`; owner `U-27689` was preserved and the 9 tracked notes were
   re-signed. WG and node keys were recovered; record this in provenance history.
 
 ## Blockers
 
-- `4221`/`4223` shared knowledge services are `spec-only`; the RFI loop is the
-  v1 knowledge path.
+- The 4201/4202 listener and peer-local vector index are live (2026-10-31);
+  the Master's 4220/4221/4222/4223 are live and read-only. The 4203 queue and
+  the time-boxed stanza remain unbound.
 
 ## Local vs live
 

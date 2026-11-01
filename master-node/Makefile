@@ -39,7 +39,7 @@ REASON ?=
         env-show parity ledger evidence-capture review-agents keygen keys-check units units-check \
         signer signer-unit reflex-unit peer-intake-unit rfi-responder-unit wg-observer-unit console vault-health vault-heal \
         provenance-verify user-init provenance-append ingest precommit shims-check context-pack context-check governance-check \
-        bundle wiki-preflight wiki-status wiki-lint wiki-query skills-sync skills-check clean
+        bundle wiki-preflight wiki-status wiki-lint wiki-query skills-sync skills-check vector-reindex vector-serve file-share-serve nat-status-serve share-ratify-unit share-ratify-serve share-ratify-list share-ratify-approve share-ratify-refuse clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -50,6 +50,45 @@ env-init: ## Write this role's .env + wiki dirs from .env.example (idempotent)
 
 env-show: ## Print the paths this role resolves (vault, peer node, state dir)
 	@"$(VAULT_ROOT)/scripts/sparknet-master-env.sh"
+
+VECTOR_PY ?= $(FABRIC_ROOT)/.venv-vector/bin/python
+VECTOR_STATE ?= $(HOME)/.local/state/sparknet/master-node/vector
+
+RATIFY_STATE ?= $(HOME)/.local/state/sparknet/master-node/share-ratify/queue.json
+RATIFY_KEYS ?= $(HOME)/.local/state/sparknet/master-node/share-keys
+SIGNER_SOCKET ?= $(HOME)/.local/state/sparknet/master-node/signer/signer.sock
+
+share-ratify-unit: ## Render the 4203 queue unit to stdout (stage only; never enables)
+	@$(ROLE_ROOT)/scripts/sparknet-share-ratify-unit.sh
+
+share-ratify-serve: ## Run the 4203 queue in the foreground (needs RATIFY_KEYS)
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-share-ratify.py" --serve --bind "$${SPARKNET_RATIFY_BIND:-127.0.0.1}" --port "$${SPARKNET_RATIFY_PORT:-4203}" --state "$(RATIFY_STATE)" --registry "$(ROLE_ROOT)/manifests/node-authorizations.json" --trusted-key-dir "$(RATIFY_KEYS)"
+
+share-ratify-list: ## Print the 4203 pending/decided queue
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-share-ratify.py" --list --state "$(RATIFY_STATE)"
+
+share-ratify-approve: ## Approve one queued share (SHARE_ID=...; signs through the signer)
+	@test -n "$(SHARE_ID)" || { echo "SHARE_ID required" >&2; exit 2; }
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-share-ratify.py" --state "$(RATIFY_STATE)" --signer-socket "$(SIGNER_SOCKET)" --approve "$(SHARE_ID)"
+
+share-ratify-refuse: ## Refuse one queued share (SHARE_ID=...; signs through the signer)
+	@test -n "$(SHARE_ID)" || { echo "SHARE_ID required" >&2; exit 2; }
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-share-ratify.py" --state "$(RATIFY_STATE)" --signer-socket "$(SIGNER_SOCKET)" --refuse "$(SHARE_ID)"
+
+vector-reindex: ## Rebuild sparknet-fabric and sparknet-shared in the 4223 store
+	@test -x "$(VECTOR_PY)" || { echo "vector-reindex: $(VECTOR_PY) missing (make chroma-dev in a separate venv)"; exit 2; }
+	@$(VECTOR_PY) "$(FABRIC_ROOT)/scripts/sparknet-chroma.py" fabric index --vault "$(FABRIC_ROOT)" --data-dir "$(VECTOR_STATE)/fabric"
+	@$(VECTOR_PY) "$(FABRIC_ROOT)/scripts/sparknet-chroma.py" shared index --vault "$(ROLE_ROOT)" --data-dir "$(VECTOR_STATE)/shared"
+
+vector-serve: ## Run the signed 4223 listener in the foreground (needs VECTOR_PY/key)
+	@test -x "$(VECTOR_PY)" || { echo "vector-serve: $(VECTOR_PY) missing"; exit 2; }
+	@$(VECTOR_PY) "$(ROLE_ROOT)/services/sparknet-vector-serve.py" --fabric-vault "$(FABRIC_ROOT)" --shared-vault "$(ROLE_ROOT)" --state-root "$(VECTOR_STATE)" --registry "$(ROLE_ROOT)/manifests/node-authorizations.json" --bind "$${SPARKNET_VECTOR_BIND:-127.0.0.1}" --port "$${SPARKNET_VECTOR_PORT:-4223}" --trusted-key "$${SPARKNET_VECTOR_TRUSTED_KEY:?set NODE_ID=PATH}"
+
+file-share-serve: ## Run the read-only 4221 file share (needs a trusted peer key)
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-file-share.py" --root "$${SPARKNET_SHARE_ROOT:-/srv/sparknet/share}" --registry "$(ROLE_ROOT)/manifests/node-authorizations.json" --bind "$${SPARKNET_SHARE_BIND:-127.0.0.1}" --port "$${SPARKNET_SHARE_PORT:-4221}" --trusted-key "$${SPARKNET_SHARE_TRUSTED_KEY:?set NODE_ID=PATH}"
+
+nat-status-serve: ## Run the read-only 4222 NAT status/dry-run surface
+	@$(PY) "$(ROLE_ROOT)/services/sparknet-nat-status.py" --registry "$(ROLE_ROOT)/manifests/node-authorizations.json" --bind "$${SPARKNET_NAT_BIND:-127.0.0.1}" --port "$${SPARKNET_NAT_PORT:-4222}" --trusted-key "$${SPARKNET_NAT_TRUSTED_KEY:?set NODE_ID=PATH}"
 
 context-pack: ## Regenerate this role's CONTEXT.md
 	@$(PY) $(FABRIC_ROOT)/scripts/sparknet-context-pack.py --root "$(VAULT_ROOT)" --role master
