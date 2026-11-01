@@ -1,7 +1,7 @@
 ---
 title: sparknet master-node Plan
 updated: 2026-11-01
-current: 23
+current: done
 ---
 
 # sparknet master-node — Active Plan
@@ -87,7 +87,7 @@ current: 23
 
 ## Step 23 — Qdrant Master store, uplift intake and distillation
 
-- [ ] **Step 23** — Run the Master's Qdrant-backed 4223 store, receive consented
+- [x] **Step 23** — Run the Master's Qdrant-backed 4223 store, receive consented
   uplift on 8091, and operate the same-family distillation scaffold.
   - [x] **23A — 4223.** `services/sparknet-vector-serve.py` loads
     `scripts/sparknet-vector.py`; only `sparknet-fabric` and

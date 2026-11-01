@@ -1,7 +1,7 @@
 ---
 title: sparknet peer-node Plan
 updated: 2026-11-01
-current: 14
+current: done
 ---
 
 # sparknet peer-node — Active Plan
@@ -83,7 +83,7 @@ current: 14
 
 ## Step 14 — Qdrant node surface, inventory and uplift
 
-- [ ] **Step 14** — Replace the node's ChromaDB with a loopback Qdrant server,
+- [x] **Step 14** — Replace the node's ChromaDB with a loopback Qdrant server,
   project users/models/usage into `sparknet-inventory`, and push consented
   uplift data through the durable outbox.
   - [x] **14A — AI stack.** `docker-compose.qdrant.yml` declares a pinned,

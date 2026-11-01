@@ -335,7 +335,7 @@ class Intake:
             suffix = ".snapshot"
         else:
             directory = self.state / "kv" / node_id
-            suffix = ".safetensors.zst"
+            suffix = ".safetensors.gz" if str(manifest.get("compression", "gzip")) == "gzip" else ".safetensors.zst"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = directory / f"{int(time.time() * 1000)}-{digest[:16]}{suffix}"
         fd, temporary = tempfile.mkstemp(prefix=".uplift-", dir=directory)

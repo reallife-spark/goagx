@@ -313,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
                 **info,
                 "sha256": _sha256(body),
                 "size": len(body),
+                "compression": "gzip",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         elif args.kind == "trace":
@@ -345,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
                 "architecture": args.architecture,
                 "sha256": _sha256(body),
                 "size": len(body),
+                "compression": "gzip",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         if args.dry_run:
