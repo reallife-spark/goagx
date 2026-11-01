@@ -35,6 +35,9 @@ import os
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
+import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
@@ -51,6 +54,8 @@ DEFAULT_REGISTRY = ROLE_ROOT / "manifests" / "node-authorizations.json"
 MAX_JSON = 8 * 1024 * 1024
 MAX_ARTIFACT = 1024 * 1024 * 1024
 REPLAY_WINDOW = 300
+INVENTORY_NAMESPACE = uuid.UUID("c3a7bb6e-4f6d-5d8e-9b8a-2b4f2f5b9c11")
+QDRANT_COLLECTION = "uplift-inventory"
 
 
 class Refusal(Exception):
@@ -228,6 +233,53 @@ class Intake:
 
     def _manifest(self, row: dict[str, Any]) -> None:
         self._write_jsonl(self.state / "manifests" / "uplift.jsonl", [row])
+
+    def _qdrant(self, method: str, path: str, payload: dict[str, Any] | None = None) -> bool:
+        """Best-effort mirror; storage on disk is authoritative for the intake."""
+        base = (
+            os.environ.get("SPARKNET_UPLIFT_QDRANT_URL", "").strip()
+            or os.environ.get("SPARKNET_QDRANT_URL", "").strip()
+        )
+        if not base:
+            return False
+        key = os.environ.get("SPARKNET_QDRANT_API_KEY", "").strip()
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["api-key"] = key
+        data = json.dumps(payload, sort_keys=True).encode() if payload is not None else None
+        request = urllib.request.Request(base.rstrip("/") + path, data=data, method=method, headers=headers)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=5) as response:
+                return 200 <= response.status < 300
+        except (urllib.error.URLError, OSError, ValueError):
+            return False
+
+    def mirror_inventory(self, rows: list[dict[str, Any]]) -> int:
+        self._qdrant("PUT", f"/collections/{QDRANT_COLLECTION}", {"vectors": {"size": 1, "distance": "Cosine"}})
+        points = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            node = str(row.get("node_id") or "unknown")
+            kind = str(row.get("kind") or "unknown")
+            object_id = str(row.get("object_id") or "")
+            if not object_id:
+                continue
+            points.append(
+                {
+                    "id": str(uuid.uuid5(INVENTORY_NAMESPACE, f"{node}:{kind}:{object_id}")),
+                    "vector": [0.0],
+                    "payload": row,
+                }
+            )
+        mirrored = 0
+        for start in range(0, len(points), 1000):
+            if self._qdrant(
+                "PUT", f"/collections/{QDRANT_COLLECTION}/points?wait=true", {"points": points[start : start + 1000]}
+            ):
+                mirrored += len(points[start : start + 1000])
+        return mirrored
 
     def inventory(self, *, node_id: str, body: dict[str, Any], source: str) -> dict[str, Any]:
         rows = body.get("inventory")
