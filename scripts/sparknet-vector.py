@@ -859,9 +859,12 @@ def _embed_query(text: str) -> list[float]:
     return vectors[0]
 
 
-def expected_stamp(docs: list[dict[str, object]]) -> dict[str, str]:
+def expected_stamp(docs: list[dict[str, object]], client: Any | None = None) -> dict[str, str]:
     """The stamp this build would write for ``docs``."""
-    return {**embedding_identity(), "corpus_digest": corpus_digest(docs)}
+    stamp = {**embedding_identity(), "corpus_digest": corpus_digest(docs)}
+    if client is not None:
+        stamp["qdrant_version"] = _qdrant_version(client)
+    return stamp
 
 
 class _UnusableIndex(Exception):
@@ -1104,7 +1107,7 @@ def _write_index(scope: str, data_dir: Path, docs: list[dict[str, object]], clie
                 points_selector=models.PointIdsList(points=[point_id(value) for value in stale]),
                 wait=True,
             )
-        _write_stamp(collection.client, scope, expected_stamp(docs))
+        _write_stamp(collection.client, scope, expected_stamp(docs, collection.client))
     except _UnusableIndex:
         raise
     except Exception as exc:
@@ -1141,9 +1144,9 @@ def cmd_index(scope: str, vault: Path, data_dir: Path) -> None:
 
 def cmd_stamp(scope: str, vault: Path, data_dir: Path) -> int:
     docs = plan_index(scope, vault)
-    expected = expected_stamp(docs)
     try:
         client = _client(data_dir)
+        expected = expected_stamp(docs, client)
         stamp = _read_stamp(client, scope)
         if stamp is None:
             raise _UnusableIndex("the collection has no stamp")
@@ -1171,9 +1174,9 @@ def cmd_stamp(scope: str, vault: Path, data_dir: Path) -> int:
 def open_checked(scope: str, vault: Path, data_dir: Path, *, log_prefix: str = "query", client: Any | None = None):
     """Open a collection whose stamp matches this build, or exit 3."""
     docs = plan_index(scope, vault)
-    expected = expected_stamp(docs)
     try:
         client = client or _client(data_dir)
+        expected = expected_stamp(docs, client)
         stamp = _read_stamp(client, scope)
         if stamp is None:
             raise _UnusableIndex("the collection has no stamp")

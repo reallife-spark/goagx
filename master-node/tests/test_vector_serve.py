@@ -39,7 +39,7 @@ def service():
     return _load("vector_serve_service", ROLE_ROOT / "services" / "sparknet-vector-serve.py")
 
 
-class FakeChroma:
+class FakeVector:
     def __init__(self):
         self.indexed = []
 
@@ -81,7 +81,7 @@ def _registry(tmp_path: Path, authz, master, capabilities: list[str]) -> Path:
 def _store(service, authz, tmp_path, http_key, capabilities=None):
     master = Ed25519PrivateKey.generate()
     registry = _registry(tmp_path, authz, master, ["cluster-dispatch"] if capabilities is None else capabilities)
-    fake = FakeChroma()
+    fake = FakeVector()
     return (
         service.VectorStore(
             fabric_vault=tmp_path,
@@ -90,7 +90,7 @@ def _store(service, authz, tmp_path, http_key, capabilities=None):
             registry_path=registry,
             trusted_keys={"peer-1": http_key.public_key()},
             authz=authz,
-            chroma=fake,
+            vector=fake,
         ),
         fake,
     )

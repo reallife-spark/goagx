@@ -92,7 +92,6 @@ class VectorStore:
         trusted_keys: dict[str, Any],
         authz: Any,
         vector: Any | None = None,
-        chroma: Any | None = None,
     ):
         self.fabric_vault = Path(fabric_vault)
         self.shared_vault = Path(shared_vault)
@@ -100,7 +99,7 @@ class VectorStore:
         self.registry_path = Path(registry_path)
         self.trusted_keys = dict(trusted_keys)
         self.authz = authz
-        self.vector = vector or chroma or _load_vector()
+        self.vector = vector or _load_vector()
 
     def _collection(self, name: str):
         if name not in ("fabric", "shared"):
