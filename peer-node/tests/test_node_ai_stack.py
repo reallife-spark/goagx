@@ -64,9 +64,8 @@ def _compose_services() -> dict[str, dict]:
 
 def test_the_stack_declares_the_nodes_own_chat_surface_only():
     services = _compose_services()
-    assert set(services) == {"open-webui"}, (
-        "the AI stack is the node's own chat surface standing on the node's infra "
-        f"model server and vector store; anything else got {sorted(services)}"
+    assert set(services) == {"open-webui", "nginx"}, (
+        f"the stack is Open WebUI plus the same-origin nginx proxy; anything else got {sorted(services)}"
     )
 
 
@@ -89,9 +88,13 @@ def test_the_only_published_port_is_the_firewalled_webui():
         "container cannot reach a loopback-only host listener"
     )
     assert webui.get("ports") is None, "with network_mode: host the surface binds through PORT, not a ports map"
-    assert webui.get("environment", {}).get("PORT") == "8181", (
-        "the operator decision is a single LAN + overlay port 8181, paired with the SPARKNET-FW host firewall"
-    )
+    assert webui.get("environment", {}).get("HOST") == "127.0.0.1"
+    assert webui.get("environment", {}).get("PORT") == "8180"
+    nginx = _compose_services()["nginx"]
+    assert nginx.get("network_mode") == "host"
+    assert nginx.get("environment", {}).get("SPARKNET_BIND") == "8181"
+    assert any("nginx.conf.template" in str(volume) for volume in nginx.get("volumes", []))
+    assert any("sparknet-menu.js" in str(volume) for volume in nginx.get("volumes", []))
     lookup = _load(MANIFEST)["topology"]
     assert lookup["published_ports"] == ["0.0.0.0:8181 (host netns)"]
     assert "SPARKNET-FW" in json.dumps(lookup) or "firewall" in json.dumps(_load(MANIFEST)["network_boundary"])
@@ -162,7 +165,10 @@ def test_open_webui_declares_the_node_agent_surface():
         "any other base URL routes the node's agents through something foreign"
     )
     assert env.get("MODEL_FILTER_ENABLED") == "true"
-    assert env.get("MODEL_FILTER_LIST") == "llama3.2:latest,plan,build,vault,node-orchestrator,masterspike"
+    assert env.get("MODEL_FILTER_LIST") == (
+        "qwen3.6-35b-262k:latest,qwen3.6-35b-262k-q8:latest,"
+        "llama3.2:latest,plan,build,vault,node-orchestrator,masterspike"
+    )
     assert env.get("DEFAULT_MODELS") == "llama3.2:latest", (
         "the default chat model is a local Ollama model present on every node, "
         "so chat keeps answering even if the bridge grant lapses; the node's "
@@ -232,8 +238,9 @@ def test_the_declared_models_match_the_webui_model_filter():
     webui = _compose_services()["open-webui"]
     filter_list = webui.get("environment", {}).get("MODEL_FILTER_LIST", "").split(",")
     ids = [m["id"] for m in manifest["selectable"]]
-    assert filter_list == ["llama3.2:latest", *ids], (
-        "the model filter names the local chat default plus every agent model"
+    local_ids = [m["id"] for m in manifest.get("local_models", [])]
+    assert filter_list == [*local_ids, "llama3.2:latest", *ids], (
+        "the model filter names the local teacher candidates, the fallback default and every agent model"
     )
 
 

@@ -1,7 +1,7 @@
 ---
 title: sparknet master-node Plan
 updated: 2026-11-01
-current: done
+current: 24
 ---
 
 # sparknet master-node — Active Plan
@@ -104,6 +104,28 @@ current: done
     Qwen2.5-7B→Qwen2.5-1.5B LoRA run was signed (`run-20261101T101033Z-…`) and
     its model card published. Raw vLLM KV capture remains open (root 81H).
   - **DoD**: master suite green; live legs `DoD: confirm: user`.
+
+## Step 24 — Master memory control and read-through
+
+- [ ] **Step 24** — Let the Master govern fleet memory without a mirror:
+  - [x] **24A — Capability and actions.** `memory-supervise` is a sensitive
+    Master-issued capability; `memory_status`, `memory_policy_set`,
+    `memory_read` and `memory_purge` are signed admin actions with fields inside
+    the canonical projection.
+  - [x] **24B — Peer execution.** The bridge verifies the signature, the target
+    and `memory-supervise`, then forwards to the local Python gateway; the
+    content is transient and the peer audits it.
+  - [x] **24C — Console posture.** The Master console carries a read-only Memory
+    menu and the admin console composes the memory verbs; no content mirror is
+    stored.
+  - [x] **24D — Project memory.** The shared `06_Projects` lifecycle and memory
+    bundle commands work in the Master role vault; reports are signed by the
+    operator, not the Master AI.
+  - **DoD**: `make test-master`, `make test-admin-supervise`,
+    `make contract-test`, `make context-check`, `make bundle-verify ROLE=master`;
+    live `memory_status` and an on-demand content read are
+    `DoD: confirm: user`.
+  - **Status: local implementation complete 2026-11-02.** Code, tests, contracts and both bundle verifications pass; live node/browser legs are `DoD: confirm: user`.
 
 ## Next
 

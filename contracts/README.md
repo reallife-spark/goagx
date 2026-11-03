@@ -35,7 +35,11 @@ the tests then prove both roles still agree.
 | `uplift-schema.json` | peer→Master consented opener: inventory, Qdrant snapshots, teacher traces, raw-KV manifests, 8091 transport and retention |
 | `inventory-schema.json` | the user/model/usage mirror Qdrant keeps, with Open WebUI as the authoritative source |
 | `distillation-schema.json` | same-family teacher→student dataset, run record, evaluation and model card |
+| `model-catalog.json` | the operator-owned model catalog: role placement (teacher on the 64 GB peer, student on the 32 GB Master), repo/revision, quant, runtime, license and fit |
+| `model-store.md` | the model store, pull/verify rule, runtime leases, idle stop, memory guard, role-specific weights and the prohibition on teacher backup on agx32 |
+| `webui-surface.md` | the peer/master Open WebUI menus, console scope, session/token rule, read-only boundary and the 3D-map pilot |
 | `knowledge-flow.md` | the map of every Master→peer, peer→Master and peer↔peer channel: what it may carry, what it must never carry, how it is authenticated, and why authority and knowledge never share a channel |
+| `memory-schema.json` | per-vault typed memory, retention, the Go store/Python gateway boundary, delegate runs and the memory-bundle payload profile |
 | `manifest.json` | **generated** — the machine-readable inventory of this directory: each JSON contract by hash (so an edit without a re-render is caught) plus the projected capability and port tables. Rendered by `scripts/sparknet-render.py`; never hand-edited. |
 
 ## Why this directory exists

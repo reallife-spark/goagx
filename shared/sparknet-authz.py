@@ -70,6 +70,7 @@ KNOWN_CAPABILITIES = frozenset(
         "admin-supervise",
         "cross-department-share",
         "model-uplift",
+        "memory-supervise",
     }
 )
 
@@ -827,6 +828,10 @@ ADMIN_REQUEST_ACTIONS = (
     "list_knowledge",
     "get_user_chats",
     "list_events",
+    "memory_status",
+    "memory_policy_set",
+    "memory_read",
+    "memory_purge",
 )
 
 #: Fields of an admin-request covered by the Master's signature. `request_id` and
@@ -850,6 +855,12 @@ ADMIN_REQUEST_FIELDS = (
     "role",
     "kb_id",
     "chat_id",
+    "memory_query",
+    "memory_types",
+    "memory_ids",
+    "project_id",
+    "policy",
+    "reason",
 )
 
 #: Fields a request must carry and fill before it can be canonicalised. The

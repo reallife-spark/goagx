@@ -34,6 +34,7 @@ and the node AI stack.
 | `sparknet-fabric` | master | yes | the structural allow-list from `scripts/sparknet-rag-corpus.py` |
 | `sparknet-shared` | master | yes | only `01_Inbox/share-*` markdown payloads |
 | `sparknet-meta` | both | no | the per-scope stamp |
+| `sparknet-memory` | both | no | optional per-vault memory vectors; payload filters carry `vault_id`, user/project scope and memory type |
 | `sparknet-inventory` | both | no | users, models and usage counters |
 | `sparknet-traces` | both | no | local teacher-trace metadata; full text lives in a content-addressed blob |
 | `sparknet-kv` | both | no | raw-KV artifact manifests; tensors live in the artifact store |

@@ -5,7 +5,7 @@
       "contract": "capabilities",
       "file": "capabilities.json",
       "schema_version": "1.0",
-      "sha256": "41d4f27fffa53a92b7e20ced73a79d95b2ee99932b4e7fd51c2b73ddbcf77593"
+      "sha256": "e3ff2d9ab5e6807bbe6d6c7638a3107f4b0ab607538fc29677012f0db2ae93cd"
     },
     {
       "contract": "distillation-schema",
@@ -32,6 +32,18 @@
       "sha256": "992e96bac463ccedc0363e593fb43a4a41cbaf368826b558734dd5c0888b3c72"
     },
     {
+      "contract": "memory-schema",
+      "file": "memory-schema.json",
+      "schema_version": 1,
+      "sha256": "a7bc9efdb40cb8980697ede47a2e98722b58cccf011dcca13ebdf6df3ca1cc90"
+    },
+    {
+      "contract": "model-catalog",
+      "file": "model-catalog.json",
+      "schema_version": "1.0",
+      "sha256": "07b47dc4c1ab39de703976cc33eee07c368af9f3c6a4e4004eec4a05d0409f01"
+    },
+    {
       "contract": "overlay",
       "file": "overlay.json",
       "schema_version": "1.0",
@@ -41,7 +53,7 @@
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "aeddbb62ce06e6fcece4e99f97e8988fb42fc3e0493d8fc28314b13b77c24f09"
+      "sha256": "1ddae1a48f7d22bceaa363c908a23914a12ce0c6726605290bdac9bd9b4ce492"
     },
     {
       "contract": "proposal-schema",
@@ -77,7 +89,7 @@
       "contract": "telemetry-schema",
       "file": "telemetry-schema.json",
       "schema_version": "1.0",
-      "sha256": "04b9a289b8469b23075e4ece9f167302fd5db8a3ca34c6ac2fc6a26de647b5af"
+      "sha256": "29ea64c67e8877baadedcf6eaea5bad2af8ca704d5b05edd8a6303673dde83d6"
     },
     {
       "contract": "tracking-schema",
@@ -101,6 +113,7 @@
     "cluster-vote",
     "cross-department-share",
     "guard-apply",
+    "memory-supervise",
     "model-uplift",
     "p2p-sync",
     "push-receive",
@@ -113,6 +126,13 @@
       "implementation_state": "implemented",
       "runtime": "not-listening",
       "service": "node-webui"
+    },
+    "4110": {
+      "bound_by": "node",
+      "host_published": true,
+      "implementation_state": "implemented",
+      "runtime": "not-listening",
+      "service": "sparknet-memory"
     },
     "4200": {
       "bound_by": "node",

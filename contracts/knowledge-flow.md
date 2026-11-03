@@ -30,6 +30,9 @@ authoritative fabric corpus. Neither property is allowed to leak into the other.
 | Shared file share | Master → peer | `4221` file-share | Overlay + signed request + `p2p-sync` | Shared fabric artifacts | Personal pages, keys, live state | Implemented; live pair 2026-10-31 |
 | Shared vector DB | Master → peer | `4223` vector-embed | Overlay + signed request + `cluster-dispatch`/`cluster-serve` | Top-K from the Qdrant `sparknet-fabric` or explicitly shared `sparknet-shared` collections | Personal pages, uplift/training collections, a caller-supplied vector, authority | Implemented; live pair 2026-10-31; Qdrant re-verification `DoD: confirm: user` |
 | Local vault / KB | node-local | Filesystem, Open WebUI KB, Qdrant | User key for signed notes; grant for agent writes | The user's own knowledge | Authority, another user's private KB | Implemented; Qdrant migration is the vector-store step |
+| Local memory index | node-local | `sparknet-memory` (Go, loopback `4110`) behind the Python gateway (`4093`) | Signed session grant, Open WebUI session, or the `0600` local token; the gateway narrows to one vault | Typed records, summaries, procedural traces and delegate runs derived from sources the node may already read | Authority, a second corpus, another user's vault, or a record the grant's scope excludes | Implemented; live node start `DoD: confirm: user` |
+| Memory bundle | peer ↔ peer | The existing `session-handoff` / `kb-share` payload on `4201`/`4202`, staged under `01_Inbox/share-<id>/` | Share grant + acceptance; no new share type | Episodic summaries, shared blackboard entries, and project notes the user selected | Short-term/cache, secrets, another user's records, authority | Payload profile implemented; live share `DoD: confirm: user` |
+| Master memory inspection | Master → peer | Existing signed `/admin/*` request on the bridge | Master signature + the peer-held `memory-supervise` capability | On-demand, scoped memory content and policy execution | A permanent mirror, a Master answer corpus, authority, or an unscoped bulk read | Implemented code; live pair `DoD: confirm: user` |
 | Context pack | build-time, node-local | `CONTEXT.md` in the role bundle, precontext, OpenCode instructions | Repository review + `make context-check` | Role purpose, boundaries, channel map, self-healing rules | Secrets, live status, personal pages | Built with this change |
 
 ## The invariants
@@ -53,7 +56,9 @@ authoritative fabric corpus. Neither property is allowed to leak into the other.
    the peer's existing scope. It does not read a peer's vault, and it does not
    push personal material.
 7. **Telemetry and admin traffic are not knowledge.** The user's AI must not
-   answer from an auth-event feed, a metrics spool or an admin response.
+   answer from an auth-event feed, a metrics spool or an admin response. A
+   `memory-supervise` response is operator evidence; the Master's own AI must not
+   ingest it.
 8. **Local-first is the default.** With no Master, chat, planning, building,
    vault reads and self-healing keep working. The node loses authority and
    external knowledge, not usefulness.
@@ -63,6 +68,12 @@ authoritative fabric corpus. Neither property is allowed to leak into the other.
     trace or KV artifact on the Master feeds the distillation pipeline. It is
     never served by `4223`, never installed into a vault, and never used to
     answer a user's question; a user's AI may not cite it.
+11. **Memory is an index, not a channel.** It reads only sources the node may
+    already read, keeps their provenance, and never creates a second vault. The
+    store is per-vault; a query cannot cross `vault_id`.
+12. **One memory plane per vault.** OpenCode, Open WebUI and the console are
+    adapters over the same store. A surface-local memory is a second answer to
+    "what does this vault remember" and is refused.
 
 ## What a user's AI may answer from
 

@@ -39,13 +39,12 @@ services:
     image: ghcr.io/open-webui/open-webui:${WEBUI_TAG:-v0.12.2}
     container_name: sparknet-webui
     restart: unless-stopped
-    # Shares the host netns (LLM: the bridge is loopback-only). LAN + overlay
-    # reachability on 8181 is gated by the SPARKNET-FW host firewall.
+    # Shares the host netns (LLM: the bridge is loopback-only). It binds host
+    # loopback only; the nginx sidecar owns the published 8181 surface.
     network_mode: host
     environment:
-      # With host networking the container listens on the host directly; PORT is
-      # the only knob that moves the surface off Open WebUI's default 8080.
-      PORT: "8181"
+      HOST: "127.0.0.1"
+      PORT: "8180"
       # The node's own model server (its infra Ollama). Never a remote node's
       # overlay address: a node that answers with another node's model stopped
       # being a node.
@@ -89,11 +88,17 @@ services:
       # the variable is unset.
       OPENAI_API_KEYS: "${SPARKNET_WEBUI_BRIDGE_GRANT:?set at deploy time; do not commit a grant}"
       MODEL_FILTER_ENABLED: "true"
-      MODEL_FILTER_LIST: "llama3.2:latest,plan,build,vault,node-orchestrator,masterspike"
+      MODEL_FILTER_LIST: "qwen3.6-35b-262k:latest,qwen3.6-35b-262k-q8:latest,llama3.2:latest,plan,build,vault,node-orchestrator,masterspike"
       # The default chat model is a LOCAL Ollama model (present on every node),
       # not a bridge agent: chat still answers even if the bridge grant lapses,
       # and the node's agents stay selectable via the filter above.
       DEFAULT_MODELS: "llama3.2:latest"
+      # The memory filter is a service adapter, not a second memory store. It
+      # talks to the loopback Python gateway, which maps the signed-in WebUI
+      # user to that user's provisioned vault before the Go store is touched.
+      SPARKNET_MEMORY_GATEWAY_URL: "${SPARKNET_MEMORY_GATEWAY_URL:-http://127.0.0.1:4093}"
+      SPARKNET_MEMORY_WEBUI_TOKEN: "${SPARKNET_MEMORY_WEBUI_TOKEN:-}"
+      SPARKNET_MEMORY_CAPTURE: "${SPARKNET_MEMORY_CAPTURE:-on}"
       # Knowledge comes from the node's own Qdrant server, but only a
       # STRUCTURE-ONLY corpus is ever ingested (schema, taxonomy, charters,
       # contracts) — never the vault's personal pages (00_System/user.md,
@@ -111,6 +116,31 @@ services:
       QDRANT_ON_DISK: "true"
     volumes:
       - open-webui-data:/app/backend/data
+
+  # The only published surface. It proxies Open WebUI on host loopback, serves
+  # /sparknet-console/ from the read-only console, and injects the launcher into
+  # the Open WebUI HTML. The launcher is a same-origin link block, not a second
+  # auth system.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: sparknet-webui-proxy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SPARKNET_BIND: "8181"
+      SPARKNET_CONSOLE_UPSTREAM: "127.0.0.1:8099"
+      SPARKNET_WEBUI_PORT: "8180"
+    volumes:
+      - ../../../webui/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../../../webui/console/sparknet-menu.js:/etc/nginx/sparknet-menu.js:ro
+    depends_on:
+      - open-webui
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8181/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   # Chat/session state, like the admin surface's open-webui-data. The node-VAULT
