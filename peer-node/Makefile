@@ -307,7 +307,7 @@ admin-agent-help: ## Admin agent --help / --serve (peer PLAN Step 12; no-op with
 # OPENCODE_VERSION / CONTAINER_PLATFORMS are the knobs a rebuild changes; the
 # image and compose must agree on OPENCODE_VERSION (the test suite asserts it).
 
-OPENCODE_VERSION ?= 1.18.35
+OPENCODE_VERSION ?= 2.2.5
 CONTAINER_PLATFORMS ?= linux/arm64,linux/amd64
 # The buildkit sandbox DNS on the fabric host is unreliable (apt/git clone fail
 # with "Temporary failure resolving"); joining the host network namespace makes
@@ -316,12 +316,12 @@ CONTAINER_BUILD_NET ?= --network=host
 # The local store cannot --load a manifest list; this maps uname to buildx.
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
-OPENCODE_RUNTIME_VERSION ?= 1.19.5
+OPENCODE_RUNTIME_VERSION ?= 2.2.5
 OPENCODE_RUNTIME_BASE ?= sparknet-spark-node:dev
 OPENCODE_RUNTIME_DIR := $(VAULT_ROOT)/configs/opencode-runtime
 
 opencode-runtime: ## Build the per-user OpenCode sandbox image (pinned, no CUDA)
-	@set -e; arch="$$(uname -m)"; case "$$arch" in 	  aarch64|arm64) asset=arm64 ;; 	  x86_64|amd64) asset=amd64 ;; 	  *) echo "unsupported host arch: $$arch" >&2; exit 1 ;; 	esac; 	tarball="$(OPENCODE_RUNTIME_DIR)/opencode-linux-$$asset.tar.gz"; 	if [ ! -s "$$tarball" ]; then 	  echo "downloading opencode $(OPENCODE_RUNTIME_VERSION) ($$asset)"; 	  curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v$(OPENCODE_RUNTIME_VERSION)/opencode-linux-$$asset.tar.gz" -o "$$tarball"; 	fi; 	docker build 	  --build-arg BASE_IMAGE="$(OPENCODE_RUNTIME_BASE)" 	  --build-arg OPENCODE_VERSION="$(OPENCODE_RUNTIME_VERSION)" 	  -t "sparknet-opencode-runtime:$(OPENCODE_RUNTIME_VERSION)" 	  "$(OPENCODE_RUNTIME_DIR)"; 	docker run --rm --entrypoint opencode "sparknet-opencode-runtime:$(OPENCODE_RUNTIME_VERSION)" --version
+	@set -e; arch="$$(uname -m)"; case "$$arch" in 	  aarch64|arm64) asset=arm64; targetarch=arm64 ;; 	  x86_64|amd64) asset=x64; targetarch=amd64 ;; 	  *) echo "unsupported host arch: $$arch" >&2; exit 1 ;; 	esac; 	tarball="$(OPENCODE_RUNTIME_DIR)/opencode-linux-$$targetarch.tar.gz"; 	if [ ! -s "$$tarball" ]; then 	  echo "downloading opencode $(OPENCODE_RUNTIME_VERSION) ($$asset)"; 	  curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v$(OPENCODE_RUNTIME_VERSION)/opencode-linux-$$asset.tar.gz" -o "$$tarball"; 	fi; 	docker build 	  --build-arg BASE_IMAGE="$(OPENCODE_RUNTIME_BASE)" 	  --build-arg OPENCODE_VERSION="$(OPENCODE_RUNTIME_VERSION)" 	  -t "sparknet-opencode-runtime:$(OPENCODE_RUNTIME_VERSION)" 	  "$(OPENCODE_RUNTIME_DIR)"; 	docker run --rm --entrypoint opencode "sparknet-opencode-runtime:$(OPENCODE_RUNTIME_VERSION)" --version
 
 opencode-runtime-clean: ## Remove the downloaded sandbox runtime tarball
 	@rm -f "$(OPENCODE_RUNTIME_DIR)"/opencode-linux-*.tar.gz
@@ -332,6 +332,7 @@ container-build: ## make dist, stage the bundle, buildx both architectures (regi
 	@cp "$$(ls -t "$(FABRIC_ROOT)"/dist/sparknet-peer-*.tar.gz | head -1)" \
 		"$(VAULT_ROOT)/container/context/sparknet-peer.tar.gz"
 	@docker buildx build $(CONTAINER_BUILD_NET) --platform "$(CONTAINER_PLATFORMS)" \
+		--build-arg OPENCODE_VERSION="$(OPENCODE_VERSION)" \
 		-t "sparknet-peer-node:$(OPENCODE_VERSION)" \
 		-f "$(VAULT_ROOT)/container/Dockerfile" "$(FABRIC_ROOT)"
 	@docker buildx build $(CONTAINER_BUILD_NET) --platform "$(CONTAINER_PLATFORMS)" \
@@ -340,6 +341,7 @@ container-build: ## make dist, stage the bundle, buildx both architectures (regi
 
 container-load: ## Build the HOST architecture with --load, for local runs/tests
 	@docker buildx build $(CONTAINER_BUILD_NET) --load --platform "linux/$(HOST_ARCH)" \
+		--build-arg OPENCODE_VERSION="$(OPENCODE_VERSION)" \
 		-t "sparknet-peer-node:$(OPENCODE_VERSION)" \
 		-f "$(VAULT_ROOT)/container/Dockerfile" "$(FABRIC_ROOT)"
 	@docker buildx build $(CONTAINER_BUILD_NET) --load --platform "linux/$(HOST_ARCH)" \
@@ -347,19 +349,19 @@ container-load: ## Build the HOST architecture with --load, for local runs/tests
 		-f "$(VAULT_ROOT)/container/anchor/Dockerfile" "$(VAULT_ROOT)/container"
 
 container-config: ## Validate the node container compose parses (no images pulled)
-	@docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" config --quiet
+	@OPENCODE_VERSION="$(OPENCODE_VERSION)" docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" config --quiet
 
 container-preflight: ## Prove chattr +i holds on the .state filesystem before relying on it
 	@./scripts/sparknet-chattr-preflight.sh
 
 container-up: container-preflight ## Preflight, then bring the node container up
-	@docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" up -d
+	@OPENCODE_VERSION="$(OPENCODE_VERSION)" docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" up -d
 
 container-health: ## Per-service container health
-	@docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" ps -a
+	@OPENCODE_VERSION="$(OPENCODE_VERSION)" docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" ps -a
 
 container-down: ## Tear the node container down
-	@docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" down
+	@OPENCODE_VERSION="$(OPENCODE_VERSION)" docker compose -f "$(VAULT_ROOT)/configs/container/docker-compose.yml" down
 
 # --- Step 7 MASTERSPIKE: the llm-wiki format as an inference artifact ----------
 # Both the Ollama Modelfile and the vLLM system-prompt artifact are generated

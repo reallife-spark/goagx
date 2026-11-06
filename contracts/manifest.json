@@ -2,6 +2,12 @@
   "contract": "sparknet-contract-manifest",
   "contracts": [
     {
+      "contract": "abac",
+      "file": "abac-schema.json",
+      "schema_version": "1.0",
+      "sha256": "9acec5362a3221f6fe3644bc89109ed75d9f00a627136334a6d48a00a275772c"
+    },
+    {
       "contract": "capabilities",
       "file": "capabilities.json",
       "schema_version": "1.0",
@@ -59,7 +65,7 @@
       "contract": "ports",
       "file": "ports.json",
       "schema_version": "2.0",
-      "sha256": "eea88acef7f3984a51c45fd43dea7abdafe36e023fa299c322b464eab4e4503a"
+      "sha256": "b45966cbf3455d1b9c4b20e08134197f0a10060daf899b2b056e5bfbdbb999bb"
     },
     {
       "contract": "proposal-schema",
