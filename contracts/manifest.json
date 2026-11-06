@@ -14,16 +14,46 @@
       "sha256": "e3ff2d9ab5e6807bbe6d6c7638a3107f4b0ab607538fc29677012f0db2ae93cd"
     },
     {
+      "contract": "collab-schema",
+      "file": "collab-schema.json",
+      "schema_version": "1.0",
+      "sha256": "bcae8ed7bb62c1a3a435f9ae848ce15bdf8d71b7cb16b204356b5256e96c4f47"
+    },
+    {
       "contract": "distillation-schema",
       "file": "distillation-schema.json",
       "schema_version": 1,
       "sha256": "0b15bff116dc200e61d2e9dbcde579fc3d699b75e21dfcb7f34e98044c16fbdf"
     },
     {
+      "contract": "event-schema",
+      "file": "event-schema.json",
+      "schema_version": "1.0",
+      "sha256": "695a33c8f67fddd6ea8efb220c61e093e64d19481540cd6625b73c495bd00c84"
+    },
+    {
+      "contract": "exec-schema",
+      "file": "exec-schema.json",
+      "schema_version": "1.0",
+      "sha256": "a1ca7608afd5498a1c0213367fb341528614d644691568b8566fe1d638dd073f"
+    },
+    {
+      "contract": "graph-schema",
+      "file": "graph-schema.json",
+      "schema_version": "1.0",
+      "sha256": "62e57d4a30fe6b9be52b9f74ebdb58be8584902bedcaca3e76e822fb44d6c6e9"
+    },
+    {
       "contract": "guard-approval",
       "file": "guard-approval.json",
       "schema_version": "1.0",
       "sha256": "e95dad8bfda51ef83020ac9ee9c39e89bb345268517ac7ff73c68ee71ea45f7c"
+    },
+    {
+      "contract": "hybrid-schema",
+      "file": "hybrid-schema.json",
+      "schema_version": "1.0",
+      "sha256": "c05cb6cffb5b182eb6c77d97846aeff538433bced175252099c2ef3efda5907b"
     },
     {
       "contract": "identity-schema",
@@ -60,6 +90,12 @@
       "file": "overlay.json",
       "schema_version": "1.0",
       "sha256": "3b73cb625f33aabb19345a94491702def0731a2b85496115e3406cad5ec83437"
+    },
+    {
+      "contract": "package-schema",
+      "file": "package-schema.json",
+      "schema_version": "1.0",
+      "sha256": "1e35308d7ac1711f78e0a960853070a1d8b3c6f002165c06d8238691235120bf"
     },
     {
       "contract": "ports",
