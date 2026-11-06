@@ -26,7 +26,7 @@ PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),$(if $(wildcard $(FABRIC_VENV_PY)),
         provenance-verify user-init provenance-append ingest accept-inbox review-inbox precommit shims-check keys-check context-pack context-check governance-check \
         ai-stack-config admin-agent-help container-build container-load container-config container-preflight container-up \
         container-health container-down model-generate model-verify model-build model-serve rfi-request vault-health vault-heal \
-        opencode-runtime opencode-runtime-clean
+        opencode-runtime opencode-runtime-clean opencode-certify
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -325,6 +325,9 @@ opencode-runtime: ## Build the per-user OpenCode sandbox image (pinned, no CUDA)
 
 opencode-runtime-clean: ## Remove the downloaded sandbox runtime tarball
 	@rm -f "$(OPENCODE_RUNTIME_DIR)"/opencode-linux-*.tar.gz
+
+opencode-certify: ## Run the real pinned OpenCode v2 API certification
+	@set -e; arch="$$(uname -m)"; case "$$arch" in 	  aarch64|arm64) asset=arm64 ;; 	  x86_64|amd64) asset=x64 ;; 	  *) echo "unsupported host arch: $$arch" >&2; exit 1 ;; 	esac; 	tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; 	echo "downloading opencode $(OPENCODE_RUNTIME_VERSION) ($$asset) for certification"; 	curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v$(OPENCODE_RUNTIME_VERSION)/opencode-linux-$$asset.tar.gz" -o "$$tmp/opencode.tar.gz"; 	tar -xzf "$$tmp/opencode.tar.gz" -C "$$tmp" opencode; 	OPENCODE_BIN="$$tmp/opencode" "$(PY)" -m pytest "$(FABRIC_ROOT)/tests/test_opencode_v2_integration.py" -q
 
 container-build: ## make dist, stage the bundle, buildx both architectures (registry-ready)
 	@$(MAKE) --no-print-directory dist $(if $(FROM_GIT),FROM_GIT=$(FROM_GIT),)
