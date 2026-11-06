@@ -1,7 +1,7 @@
 ---
 title: sparknet peer-node Plan
-updated: 2026-11-01
-current: 15
+updated: 2026-11-06
+current: 17
 ---
 
 # sparknet peer-node — Active Plan
@@ -17,7 +17,7 @@ current: 15
 - `[x]` complete — DoD verified
 - **DoD** — the check that proves the step is done; `DoD: confirm: user` when a
   human must confirm
-- `current: N` — step being worked; `current: done` — terminal
+- `current: N` — step being worked; `current: 16` — terminal
 
 ## Closed steps
 
@@ -101,7 +101,7 @@ current: 15
 
 ## Step 15 — Peer typed memory adapters
 
-- [ ] **Step 15** — Serve the per-vault memory plane from the node:
+- [x] **Step 15** — Serve the per-vault memory plane from the node:
   - [x] **15A — Service and gateway.** The Go `sparknet-memory` service on
     loopback `4110`, the Python gateway on `4093`, the setup-generated
     gateway/local/WebUI tokens, and `make memory-index` for vault pages.
@@ -124,7 +124,79 @@ current: 15
     `make lint`, `make format-check`, `make context-check`,
     `make bundle-verify ROLE=peer`; live OpenCode/WebUI recall and capture are
     `DoD: confirm: user`.
-  - **Status: local implementation complete 2026-11-02.** Code, tests, contracts and both bundle verifications pass; live node/browser legs are `DoD: confirm: user`.
+  - **Status: complete 2026-11-04.** The memory sidecar is live on agx64 (`4110` store, `4093` gateway); the peer console `/api/memory` returns 200; OpenCode MCP `memory_remember`/`memory_search` round-trips; the Open WebUI filter is installed, active and global, and the WebUI token path stores and retrieves a user-vault record.
+
+## Step 16 — OpenCode engine and Open WebUI v0.13.0
+
+- [x] **Step 16** — Replace the bridge-as-model ack surface with the OpenCode
+  engine and the workspace baseline.
+  - [x] `services/sparknet-opencode-engine.py`, `configs/opencode-runtime/`,
+    `configs/opencode-engine/`, `systemd/sparknet-opencode-engine@.service`;
+    one sandbox per `peer-<user_id>`, no key/state/role-vault mount.
+  - [x] `scripts/sparknet-webui-workspace.py apply`: settings, prompts, tools,
+    functions, per-user model migration, structure-only KB, reindex.
+  - [x] Live on agx64: Open WebUI `v0.13.0`, 16 prompts, 4 tools, 2 functions,
+    three per-user models on `sparknet-chat`; chat returns `engine-ok`; build
+    writes inside the sandbox only.
+  - **DoD**: peer suite, contract-test, lint/format/shellcheck/render/sbom and
+    `make ci CI_QUICK=1` green; browser click-through `DoD: confirm: user`.
+
+## Step 17 — Peer role inversion: agx32 peer
+
+- [ ] **Step 17** — Move the peer role from `agx64` to `agx32` as part of the
+  fabric role inversion.
+  - [ ] **17A — Freeze and preflight.** Park peer live legs; stop peer services;
+    archive and verify `peer-*` vaults, provisioner `.state`, WebUI volume,
+    Qdrant volume, memory state, OpenCode engine state and peer state dir;
+    record users, KBs, chats, collection counts and service paths.
+  - [ ] **17B — Identity and overlay.** Set `peer-node/manifests/node-identity.json`
+    to `sparknet-node-0002` at `10.100.0.2/32`; generate the new peer node
+    identity key on `agx32`; keep the cluster key; render the peer WireGuard
+    config and firewall egress restriction to `10.100.0.1`.
+  - [ ] **17C — Move data and services.** Restore the peer vaults, provisioner
+    state, WebUI volume, Qdrant volume, memory and engine state on `agx32`;
+    start guard, bridge, 4201/4202, telemetry/checkpoint/inventory/RFI, memory
+    4110/4093, WebUI 8181, engine 4204, Qdrant, provisioner, admin agent and
+    self-healing.
+  - [ ] **17D — Registry and model placement.** Install the higher-sequence
+    registry signed by the new `agx64` Master; verify the peer entry; move the
+    student runtime config/compose to `peer-node/`; update the peer WebUI model
+    filter and `agent-models.json` to the student surface.
+  - [ ] **17E — Verify and clean up.** Prove user/KB/chat parity, memory and
+    engine round trips, guard registry verification, model benchmark and all
+    peer gates; remove the old peer services and old user-data copies from
+    `agx64` only after `agx32` is verified.
+  - **DoD**: peer WebUI 8181, guard 9090, bridge 4096, share 4201/4202,
+    memory 4110/4093 and engine 4204 are healthy on `agx32`; user data and
+    Qdrant counts match preflight; peer egress is restricted to `10.100.0.1`;
+    peer suite, `make contract-test`, `make context-check`,
+    `make bundle-verify ROLE=peer` and `make ci` pass; live legs are
+    `DoD: confirm: user`.
+
+## Step 18 — Peer-side Gemini blueprint surfaces
+
+- [ ] **Step 18** — Add the peer half of the sovereign-cluster blueprint after
+  Step 17: event/agent bus, collaboration client, execution bridge/daemon,
+  self-improvement loop, package CLI, trace tap and hybrid retrieval.
+  - [ ] **18A — Event bus and agents.** Subscribe to signed tasks/events,
+    dispatch to the real domain agents, publish attested results and expose
+    queue/health.
+  - [ ] **18B — Collaboration.** Join cross-department threads with the user's
+    personal agent; enforce vault scope and ABAC; label agent messages and
+    citations.
+  - [ ] **18C — Execution.** Pair the user workstation daemon; signed JSON-RPC;
+    argv allow-list; path roots; user OS cap; consent UI; no `shell=True` and
+    no root socket.
+  - [ ] **18D — Self-improvement and packages.** Firecracker/worktree mutation
+    loop, deterministic benchmarks, Git promotion/rollback; signed package
+    install/enable/remove.
+  - [ ] **18E — Retrieval and model tap.** Hybrid semantic+agentic retrieval
+    with both result sets to the agent; trace tap for consented distillation;
+    student runtime and dual-response option.
+  - **DoD**: peer-side loopback rehearsals for every new channel; no authority
+    on a knowledge channel; `make test-role`, `make contract-test`,
+    `make context-check`, `make bundle-verify ROLE=peer`, `make ci`; live legs
+    `DoD: confirm: user`.
 
 ## Next
 

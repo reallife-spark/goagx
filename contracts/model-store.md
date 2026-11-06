@@ -1,7 +1,7 @@
 ---
 title: sparknet model store and runtime leases
 role: both
-updated: 2026-11-01
+updated: 2026-11-06
 ---
 
 # Model store and runtime leases
@@ -18,8 +18,8 @@ vault, a bundle, `MEMORY.md` or a signed envelope.
 
 | Node | Role | May serve | Must not serve |
 |---|---|---|---|
-| `agx64` — peer, 64 GB | teacher | Teacher candidates, embedding models | Student training; Master authority |
-| `agx32` — master, 32 GB | student | Student candidates, embedding models | The teacher; teacher backup weights |
+| `agx64` — Master, 64 GB | teacher | Teacher candidates, embedding models | User chat; student training; peer vault reads |
+| `agx32` — peer, 32 GB | student | Student candidates, embedding models | The teacher; teacher backup weights |
 
 The teacher is deliberately **not eligible for `agx32`**. A 32 GB node cannot
 hold the teacher with context headroom, and copying the weights there is a cold
@@ -75,10 +75,10 @@ It is an operator deployment action.
 
 ## Runtime leases
 
-The teacher listens on `127.0.0.1:8100` on `agx64`; the student listens on
-`127.0.0.1:8101` on `agx32`. Both are node-local model surfaces, not fabric
-edges: Open WebUI reaches them through the host network namespace, and the
-firewall does not publish them.
+The teacher listens on `127.0.0.1:8100` on the `agx64` Master; the student
+listens on `127.0.0.1:8101` on the `agx32` peer. Both are node-local model
+surfaces, not fabric edges: the local surface reaches them through the host
+network namespace, and the firewall does not publish them.
 
 `scripts/sparknet-model-runtime.py` is the only on-demand start/stop path.
 
@@ -114,6 +114,37 @@ Stopping a container frees unified memory and GPU access. It does not free the
 model files. Disk is managed by catalog removal, dangling-image pruning and
 builder-cache pruning; Qdrant volumes and pinned rollback images are never
 pruned by this contract.
+
+## Update, promotion and rollback
+
+Weights are updated from a pinned manifest, never by editing a running model in
+place. The per-node state lives at
+`/mnt/ai/models/state/<node>.json` (or the configured store root) at `0600`:
+
+- `active` — the manifest currently served;
+- `previous` — the last active manifest kept for rollback;
+- `candidate` — a verified manifest awaiting a benchmark and operator decision.
+
+The operator flow is:
+
+1. `scripts/sparknet-model-pull.py` pulls and verifies the new revision; the
+   resolved commit and every file hash are recorded.
+2. `scripts/sparknet-model-update.py set-candidate` records the verified
+   manifest without serving it.
+3. `scripts/sparknet-model-bench.py` runs the fixed suite against the candidate.
+4. `scripts/sparknet-model-update.py promote` refuses unless the candidate is
+   the named model, the benchmark has no error and its quality pass rate is at
+   least the configured floor (0.8 by default). Promotion swaps `active` and
+   `previous`; it does not delete the previous weights.
+5. `scripts/sparknet-model-update.py rollback` swaps the two back and is the
+   only rollback path.
+6. A serving alias (`sparknet-teacher:active`, `sparknet-student:active`) is
+   updated only after promotion, so Open WebUI clients keep a stable model id.
+
+An operator is named on every promotion and rollback. The benchmark result is
+retained beside the state file. A missing manifest, unpinned manifest, hash
+drift, failed benchmark, low quality or missing operator refuses the action.
+No model or delegate may call these commands.
 
 ## Failure semantics
 
