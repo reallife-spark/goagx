@@ -40,6 +40,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sparknet_loader import load_shared
 
+ABAC = load_shared("sparknet-abac.py", "sparknet_abac_memory_gateway")
+GRAPH = load_shared("sparknet-graph.py", "sparknet_graph_memory_gateway")
+
 HERE = Path(__file__).resolve().parent
 SCHEMA = "sparknet-memory-gateway/1"
 DEFAULT_MEMORY_URL = "http://127.0.0.1:4110"
@@ -304,6 +307,13 @@ class Gateway:
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
         return slug[:80] or "note"
 
+    @staticmethod
+    def _authority(rel: str) -> bool:
+        try:
+            return ABAC.resource_class_for(rel) == "authority"
+        except ABAC.AbacError:
+            return True
+
     def _vault_candidate(self, vault_path: str, rel: str) -> Path:
         root = Path(vault_path).expanduser().resolve()
         cleaned = (rel or "").replace("\\", "/").strip().lstrip("/")
@@ -319,6 +329,8 @@ class Gateway:
             raise GatewayError(403, "vault-forbidden", "path names runtime state")
         if candidate.name in VAULT_SKIP_NAMES:
             raise GatewayError(403, "vault-forbidden", "path names a secret index")
+        if self._authority(candidate.relative_to(root).as_posix()):
+            raise GatewayError(403, "authority-surface", "path names an authority surface")
         return candidate
 
     def _vault_files(self, vault_path: str) -> list[Path]:
@@ -330,10 +342,49 @@ class Gateway:
             rel = path.relative_to(root)
             if any(part in VAULT_SKIP_PARTS for part in rel.parts):
                 continue
+            if self._authority(rel.as_posix()):
+                continue
             if path.suffix.lower() not in VAULT_SUFFIXES:
                 continue
             files.append(path)
         return sorted(files)
+
+    @staticmethod
+    def _page_classification(rel: str) -> str:
+        if rel.startswith(("02_Daily/", "03_Sources/", "_raw/", "_staging/")):
+            return "confidential"
+        return "internal"
+
+    @staticmethod
+    def _page_title(text: str, rel: str) -> str:
+        for line in text.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip() or Path(rel).stem
+        return Path(rel).stem
+
+    def vault_graph(self, vault_path: str) -> dict[str, Any]:
+        root = Path(vault_path).resolve()
+        pages = []
+        for path in self._vault_files(vault_path)[:500]:
+            rel = path.relative_to(root).as_posix()
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            pages.append(
+                {
+                    "vault_id": root.name,
+                    "path": rel,
+                    "title": self._page_title(text, rel),
+                    "classification": self._page_classification(rel),
+                    "text": text,
+                }
+            )
+        try:
+            graph = GRAPH.build_graph(pages)
+        except GRAPH.GraphError as exc:
+            raise GatewayError(400, exc.code, exc.message) from exc
+        return {"ok": True, "graph": graph}
 
     def vault_list(self, vault_path: str, prefix: str = "", limit: int = 500) -> dict[str, Any]:
         base = self._vault_candidate(vault_path, prefix)
@@ -344,6 +395,8 @@ class Gateway:
                     continue
                 rel = path.relative_to(Path(vault_path).resolve()).as_posix()
                 if any(part in VAULT_SKIP_PARTS for part in Path(rel).parts):
+                    continue
+                if self._authority(rel):
                     continue
                 if path.suffix.lower() not in VAULT_SUFFIXES:
                     continue
@@ -574,6 +627,10 @@ class Gateway:
                     int(merged.get("top_k") or 8),
                 )
                 self.audit(kind, actor_id, "vault.search", vault_path, {"query": merged.get("query")})
+                return 200, payload
+            if path == "/v1/vault/graph":
+                payload = self.vault_graph(vault_path)
+                self.audit(kind, actor_id, "vault.graph", vault_path, {"nodes": len(payload["graph"]["nodes"])})
                 return 200, payload
             if path == "/v1/vault/capture":
                 payload = self.vault_capture(vault_path, merged)
