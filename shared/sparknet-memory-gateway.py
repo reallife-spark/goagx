@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -148,6 +149,7 @@ class Gateway:
         self.identity_path = Path(identity_path or (HERE.parent / "peer-node" / "manifests" / "node-identity.json"))
         self.authz = load_shared("sparknet-authz.py", "sparknet_authz_gateway")
         self._webui_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._nonce_lock = threading.Lock()
 
     # -- authority ---------------------------------------------------------
 
@@ -198,6 +200,33 @@ class Gateway:
             raise GatewayError(503, "identity-invalid", "identity is not an object")
         return value
 
+    @property
+    def _nonce_path(self) -> Path:
+        return self.state_dir / "consumed-grant-nonces.json"
+
+    def _read_nonces(self) -> set[str]:
+        path = self._nonce_path
+        if not path.is_file():
+            return set()
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GatewayError(503, "nonce-store-unavailable", str(exc)) from exc
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise GatewayError(503, "nonce-store-invalid", "consumed nonce store is malformed")
+        return set(value)
+
+    def _write_nonces(self, nonces: set[str]) -> None:
+        path = self._nonce_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temp = path.with_name(path.name + ".tmp")
+            temp.write_text(json.dumps(sorted(nonces)) + "\n", encoding="utf-8")
+            os.chmod(temp, 0o600)
+            os.replace(temp, path)
+        except OSError as exc:
+            raise GatewayError(503, "nonce-store-unavailable", str(exc)) from exc
+
     def _grant(self, token: str) -> dict[str, Any] | None:
         try:
             raw = self.authz.decode_b64_strict(token, what="grant", urlsafe=True)
@@ -206,17 +235,31 @@ class Gateway:
             return None
         if not isinstance(grant, dict) or not grant.get("grant_id"):
             return None
+        nonce = grant.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            raise GatewayError(403, "grant-refused", "grant names no nonce")
         registry, master_key = self._registry()
-        decision = self.authz.verify_grant(
-            grant,
-            master_public_key=master_key,
-            registry=registry,
-            node_identity=self._identity(),
-            consumed_nonces=frozenset(),
-        )
-        if not decision.allowed:
-            raise GatewayError(403, "grant-refused", decision.reason)
+        with self._nonce_lock:
+            consumed = self._read_nonces()
+            decision = self.authz.verify_grant(
+                grant,
+                master_public_key=master_key,
+                registry=registry,
+                node_identity=self._identity(),
+                consumed_nonces=frozenset(consumed),
+            )
+            if not decision.allowed:
+                raise GatewayError(403, "grant-refused", decision.reason)
         return grant
+
+    def _consume_grant_nonce(self, nonce: str | None) -> None:
+        if not nonce:
+            return
+        with self._nonce_lock:
+            consumed = self._read_nonces()
+            if nonce in consumed:
+                raise GatewayError(403, "grant-refused", "grant nonce was already used")
+            self._write_nonces(consumed | {nonce})
 
     def _webui_user(self, token: str) -> dict[str, Any]:
         cached = self._webui_cache.get(token)
@@ -301,6 +344,7 @@ class Gateway:
                 "vault_path": vault_path,
                 "scope": {"user_id": user_id},
                 "scope_paths": list(subject["scope"]),
+                "grant_nonce": str(grant.get("nonce") or ""),
             }
             return "grant", user_id, vault_path, constraints
 
@@ -685,6 +729,7 @@ class Gateway:
             if path == "/v1/vault/capture":
                 payload = self.vault_capture(vault_path, merged)
                 self.audit(kind, actor_id, "vault.capture", vault_path, {"path": payload.get("path")})
+                self._consume_grant_nonce(constraints.get("grant_nonce"))
                 return 200, payload
             raise GatewayError(404, "not-found", "unknown vault route")
         if path == "/v1/rfi":
@@ -698,6 +743,7 @@ class Gateway:
                 vault_path,
                 {"scope": merged.get("scope"), "request": payload.get("request", {}).get("request_id")},
             )
+            self._consume_grant_nonce(constraints.get("grant_nonce"))
             return 200, payload
         if path in MUTATING and method != "POST":
             raise GatewayError(405, "method-not-allowed", f"{path} requires POST")
@@ -724,6 +770,8 @@ class Gateway:
                 status, payload = self.forward(method, path, None, query)
             else:
                 status, payload = self.forward(method, path, merged, query)
+            if method == "POST" and path == "/v1/delegates/plan":
+                self._consume_grant_nonce(constraints.get("grant_nonce"))
             return status, payload
         if path.startswith("/v1/memory/"):
             if method == "POST" and (path in MUTATING or path == "/v1/memory/inspect"):
@@ -733,6 +781,8 @@ class Gateway:
                 status, payload = self.forward(method, path, None, query)
             else:
                 status, payload = self.forward(method, path, merged, query)
+            if method == "POST" and path in MUTATING:
+                self._consume_grant_nonce(constraints.get("grant_nonce"))
             return status, payload
         if path == "/v1/admin/inspect":
             if kind not in ("local",):
