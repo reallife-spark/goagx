@@ -44,6 +44,8 @@ from sparknet_loader import load_shared
 ABAC = load_shared("sparknet-abac.py", "sparknet_abac_memory_gateway")
 GRAPH = load_shared("sparknet-graph.py", "sparknet_graph_memory_gateway")
 HYBRID = load_shared("sparknet-hybrid.py", "sparknet_hybrid_memory_gateway")
+COLLAB = load_shared("sparknet-collab.py", "sparknet_collab_memory_gateway")
+EXEC = load_shared("sparknet-exec-rpc.py", "sparknet_exec_memory_gateway")
 
 HERE = Path(__file__).resolve().parent
 SCHEMA = "sparknet-memory-gateway/1"
@@ -458,6 +460,99 @@ class Gateway:
             raise GatewayError(400, exc.code, exc.message) from exc
         return {"ok": True, "graph": graph}
 
+    @staticmethod
+    def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+
+    def _collab_root(self, vault_path: str) -> Path:
+        root = Path(vault_path).resolve()
+        path = root / "01_Inbox" / "collab"
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return path
+
+    def collab_create_room(self, vault_path: str, actor_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        participants = body.get("participants")
+        if not isinstance(participants, list) or not participants:
+            participants = [{"node_id": actor_id, "user_id": actor_id, "department": None}]
+        cleaned = []
+        for item in participants:
+            if isinstance(item, dict):
+                cleaned.append(
+                    {
+                        "node_id": str(item.get("node_id") or actor_id),
+                        "user_id": str(item.get("user_id") or actor_id),
+                        "department": None,
+                        "role": str(item.get("role") or "participant"),
+                    }
+                )
+        if not any(item["node_id"] == actor_id and item["user_id"] == actor_id for item in cleaned):
+            cleaned.append({"node_id": actor_id, "user_id": actor_id, "department": None, "role": "owner"})
+        room_id = str(body.get("room_id") or "").strip()
+        room = COLLAB.make_room(
+            owner_node_id=actor_id,
+            participants=cleaned,
+            classification=str(body.get("classification") or "internal"),
+            department=None,
+            room_id=room_id or None,
+            verified=True,
+        )
+        path = self._collab_root(vault_path) / room["room_id"] / "room.json"
+        self._write_json_atomic(path, room)
+        return {"ok": True, "room": room}
+
+    def collab_list_rooms(self, vault_path: str) -> dict[str, Any]:
+        root = self._collab_root(vault_path)
+        rooms = []
+        for room_file in sorted(root.glob("*/room.json")):
+            try:
+                room = COLLAB.validate_room(json.loads(room_file.read_text(encoding="utf-8")))
+            except (OSError, ValueError, COLLAB.CollabError):
+                continue
+            rooms.append(room)
+        return {"ok": True, "rooms": rooms}
+
+    def collab_post_message(self, vault_path: str, actor_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        room_id = str(body.get("room_id") or "").strip()
+        if not room_id:
+            raise GatewayError(400, "malformed", "room_id is required")
+        room_file = self._collab_root(vault_path) / room_id / "room.json"
+        try:
+            room = COLLAB.validate_room(json.loads(room_file.read_text(encoding="utf-8")))
+        except (OSError, ValueError, COLLAB.CollabError) as exc:
+            raise GatewayError(404, "not-found", "collaboration room not found") from exc
+        message = COLLAB.make_message(
+            room,
+            sender_node_id=actor_id,
+            sender_user_id=actor_id,
+            text=str(body.get("text") or ""),
+            provenance={"source": "local"},
+            classification=str(body.get("classification") or room["classification"]),
+        )
+        path = self._collab_root(vault_path) / room_id / "messages" / f"{message['message_id']}.json"
+        self._write_json_atomic(path, message)
+        return {"ok": True, "message": message}
+
+    def collab_list_messages(self, vault_path: str, room_id: str) -> dict[str, Any]:
+        if not room_id:
+            raise GatewayError(400, "malformed", "room_id is required")
+        room_file = self._collab_root(vault_path) / room_id / "room.json"
+        try:
+            room = COLLAB.validate_room(json.loads(room_file.read_text(encoding="utf-8")))
+        except (OSError, ValueError, COLLAB.CollabError) as exc:
+            raise GatewayError(404, "not-found", "collaboration room not found") from exc
+        messages = []
+        for message_file in sorted((room_file.parent / "messages").glob("*.json")):
+            try:
+                messages.append(COLLAB.validate_message(json.loads(message_file.read_text(encoding="utf-8")), room))
+            except (OSError, ValueError, COLLAB.CollabError):
+                continue
+        messages.sort(key=lambda item: (item["created_at"], item["message_id"]))
+        return {"ok": True, "room": room, "messages": messages}
+
     def vault_hybrid(
         self, vault_path: str, query: str, top_k: int = 8, scope_paths: list[str] | None = None
     ) -> dict[str, Any]:
@@ -738,6 +833,45 @@ class Gateway:
         if isinstance(merged.get("scope"), dict) and isinstance(constraints.get("scope"), dict):
             merged["scope"] = {**constraints["scope"], **merged["scope"]}
             merged["scope"]["user_id"] = constraints["scope"]["user_id"]
+        if path == "/v1/exec/validate":
+            if method != "POST":
+                raise GatewayError(405, "method-not-allowed", "execution validation requires POST")
+            if kind != "local":
+                raise GatewayError(403, "local-only", "execution validation is a local operator action")
+            request = merged.get("request")
+            if not isinstance(request, dict):
+                raise GatewayError(400, "malformed", "request must be an object")
+            normalised = EXEC.validate_request(request, verified=True)
+            self.audit(kind, actor_id, "exec.validate", vault_path, {"request_id": normalised.get("request_id")})
+            return 200, {"ok": True, "executed": False, "request": normalised}
+        if path.startswith("/v1/collab/"):
+            if path == "/v1/collab/rooms":
+                if method != "GET":
+                    raise GatewayError(405, "method-not-allowed", "room listing requires GET")
+                payload = self.collab_list_rooms(vault_path)
+                self.audit(kind, actor_id, "collab.rooms", vault_path, {"rooms": len(payload["rooms"])})
+                return 200, payload
+            if path == "/v1/collab/messages":
+                if method != "GET":
+                    raise GatewayError(405, "method-not-allowed", "message listing requires GET")
+                payload = self.collab_list_messages(vault_path, str(merged.get("room_id") or ""))
+                self.audit(kind, actor_id, "collab.messages", vault_path, {"room_id": merged.get("room_id")})
+                return 200, payload
+            if path == "/v1/collab/room":
+                if method != "POST":
+                    raise GatewayError(405, "method-not-allowed", "room creation requires POST")
+                payload = self.collab_create_room(vault_path, actor_id, merged)
+                self.audit(kind, actor_id, "collab.room.create", vault_path, {"room_id": payload["room"]["room_id"]})
+                self._consume_grant_nonce(constraints.get("grant_nonce"))
+                return 200, payload
+            if path == "/v1/collab/message":
+                if method != "POST":
+                    raise GatewayError(405, "method-not-allowed", "messages require POST")
+                payload = self.collab_post_message(vault_path, actor_id, merged)
+                self.audit(kind, actor_id, "collab.message", vault_path, {"room_id": merged.get("room_id")})
+                self._consume_grant_nonce(constraints.get("grant_nonce"))
+                return 200, payload
+            raise GatewayError(404, "not-found", "unknown collaboration route")
         if path.startswith("/v1/vault/"):
             if path == "/v1/vault/capture" and method != "POST":
                 raise GatewayError(405, "method-not-allowed", "vault capture requires POST")
