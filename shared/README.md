@@ -215,8 +215,9 @@ assembles the role together with `shared/` and `contracts/`.
 
 ## Step 89 shared foundations
 
-The sovereignty blueprint added six narrowing/transport modules. They are data
-contracts, not authority implementations; none of them signs or grants:
+The sovereignty blueprint added the ABAC foundation plus six
+narrowing/transport modules. They are data contracts, not authority
+implementations; none of them signs or grants:
 
 | Module | Contract | What it does |
 |---|---|---|
