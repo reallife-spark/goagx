@@ -67,7 +67,9 @@
     "malformed-page",
     "bad-path",
     "bad-vault",
+    "duplicate-node",
     "cross-vault-edge",
-    "unknown-node"
+    "unknown-node",
+    "bad-direction"
   ]
 }

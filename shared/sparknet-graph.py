@@ -20,6 +20,7 @@ NODE_SCHEMA = "sparknet-graph-node/1"
 EDGE_SCHEMA = "sparknet-graph-edge/1"
 EDGE_KINDS = ("wikilink", "frontmatter", "manual")
 CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
+VAULT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 
@@ -65,8 +66,13 @@ def _page(page: Mapping[str, Any]) -> dict[str, Any]:
     _require(isinstance(page, Mapping), "malformed-page", "page must be an object")
     path = normalize_path(page.get("path"))
     vault_id = _nonempty(page.get("vault_id"), "vault_id", "bad-vault")
-    classification = page.get("classification", "internal")
-    _require(classification in CLASSIFICATIONS, "malformed-page", "classification is not in the closed vocabulary")
+    _require(bool(VAULT_ID_RE.fullmatch(vault_id)), "bad-vault", "vault_id has the wrong shape")
+    classification = page.get("classification")
+    _require(
+        isinstance(classification, str) and classification in CLASSIFICATIONS,
+        "malformed-page",
+        "classification is required and must be in the closed vocabulary",
+    )
     tags = page.get("tags", [])
     _require(
         isinstance(tags, (list, tuple)) and all(isinstance(tag, str) for tag in tags),
@@ -107,6 +113,9 @@ def build_graph(pages: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Build a deterministic graph; no cross-vault edge is ever created."""
     pages = list(pages)
     nodes = [_page(page) for page in pages]
+    ids = [node["id"] for node in nodes]
+    _require(len(ids) == len(set(ids)), "duplicate-node", "duplicate node id in the corpus")
+    known_vaults = {node["vault_id"] for node in nodes}
     by_path = {(node["vault_id"], node["path"]): node["id"] for node in nodes}
     titles: dict[tuple[str, str], str] = {}
     duplicates: set[tuple[str, str]] = set()
@@ -124,12 +133,13 @@ def build_graph(pages: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             _require(kind in EDGE_KINDS, "malformed-page", f"unknown edge kind {kind!r}")
             target = literal.strip()
             vault_id = source["vault_id"]
-            if ":" in target and not target.startswith("/") and "/" not in target.split(":", 1)[0]:
+            if ":" in target and not target.startswith("/"):
                 prefix, rest = target.split(":", 1)
-                if prefix != vault_id:
+                if prefix in known_vaults and prefix != vault_id:
                     unresolved.append({"source": source["id"], "target": target, "reason": "cross-vault-edge"})
                     continue
-                target = rest
+                if prefix == vault_id:
+                    target = rest
             try:
                 target_path = normalize_path(target)
             except GraphError:
@@ -160,7 +170,13 @@ def build_graph(pages: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def neighbors(graph: Mapping[str, Any], node_id: str, direction: str = "both") -> list[str]:
-    _require(direction in ("in", "out", "both"), "unknown-node", "direction must be in, out or both")
+    _require(direction in ("in", "out", "both"), "bad-direction", "direction must be in, out or both")
+    nodes = graph.get("nodes")
+    _require(
+        isinstance(nodes, list) and any(node.get("id") == node_id for node in nodes if isinstance(node, Mapping)),
+        "unknown-node",
+        "node is not in the graph",
+    )
     edges = graph.get("edges")
     _require(isinstance(edges, list), "malformed-page", "graph has no edges")
     found = set()

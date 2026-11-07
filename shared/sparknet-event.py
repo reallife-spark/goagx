@@ -28,6 +28,7 @@ CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
 EVENT_ID_RE = re.compile(r"^evt_[A-Za-z0-9_-]{8,64}$")
 EVENT_TYPE_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z0-9-]+){1,2}$")
 TOPIC_RE = re.compile(r"^sparknet\.[a-z0-9-]+\.[a-z0-9-]+$")
+MAX_EVENT_TTL = 86400
 SIGNED_FIELDS = (
     "schema_version",
     "event_id",
@@ -79,7 +80,7 @@ def _iso(moment: datetime) -> str:
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def new_event_id() -> str:
@@ -105,12 +106,19 @@ def make_event(
 ) -> dict[str, Any]:
     """Build and validate one envelope. Never publishes or signs."""
     _require(isinstance(payload, Mapping), "bad-payload", "payload must be a JSON object")
+    _require(isinstance(scope, (list, tuple)), "bad-scope", "scope must be a list")
+    try:
+        json.dumps(dict(payload), sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise EventError("bad-payload", "payload is not strict JSON") from exc
     now = created_at or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     if expires_at is None:
         _require(
-            isinstance(ttl_seconds, int) and 1 <= ttl_seconds <= 86400, "malformed-event", "ttl_seconds out of range"
+            isinstance(ttl_seconds, int) and not isinstance(ttl_seconds, bool) and 1 <= ttl_seconds <= MAX_EVENT_TTL,
+            "malformed-event",
+            "ttl_seconds out of range",
         )
         expires_at = now + timedelta(seconds=ttl_seconds)
     event = {
@@ -152,6 +160,11 @@ def validate_event(
     created = _timestamp(event.get("created_at"), "created_at")
     expires = _timestamp(event.get("expires_at"), "expires_at")
     _require(expires >= created, "malformed-event", "expires_at precedes created_at")
+    _require(
+        (expires - created).total_seconds() <= MAX_EVENT_TTL,
+        "malformed-event",
+        "event lifetime exceeds the maximum",
+    )
     if not allow_expired:
         _require(
             expires > (now or datetime.now(timezone.utc)).astimezone(timezone.utc), "expired-event", "event has expired"
@@ -174,6 +187,10 @@ def validate_event(
     )
     payload = event.get("payload")
     _require(isinstance(payload, Mapping), "bad-payload", "payload must be a JSON object")
+    try:
+        json.dumps(dict(payload), sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise EventError("bad-payload", "payload is not strict JSON") from exc
     signature = event.get("signature_b64")
     _require(signature is None or isinstance(signature, str), "bad-signature", "signature_b64 must be a string or null")
     return {
@@ -207,7 +224,7 @@ def matches_subscription(event: Mapping[str, Any], subscription: str) -> bool:
     pattern_parts = subscription.strip().split(".")
     for index, part in enumerate(pattern_parts):
         if part == ">":
-            return index == len(pattern_parts) - 1 and len(topic_parts) >= index
+            return index == len(pattern_parts) - 1 and len(topic_parts) > index
         if index >= len(topic_parts):
             return False
         if part != "*" and part != topic_parts[index]:

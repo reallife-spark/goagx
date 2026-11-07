@@ -17,7 +17,22 @@ from typing import Any
 REQUEST_SCHEMA = "sparknet-exec-request/1"
 RESPONSE_SCHEMA = "sparknet-exec-response/1"
 MAX_TIMEOUT_SECONDS = 300
+MAX_REQUEST_TTL = 3600
+CLOCK_SKEW = 300
 MAX_OUTPUT_BYTES = 1 << 20
+KNOWN_CAPABILITIES = (
+    "telemetry",
+    "p2p-sync",
+    "push-receive",
+    "guard-apply",
+    "cluster-vote",
+    "cluster-dispatch",
+    "cluster-serve",
+    "admin-supervise",
+    "cross-department-share",
+    "model-uplift",
+    "memory-supervise",
+)
 ENV_ALLOW = (
     "HOME",
     "LANG",
@@ -83,7 +98,7 @@ def _iso(moment: datetime) -> str:
 
 def _cwd(value: Any) -> str:
     _require(isinstance(value, str) and bool(value.strip()), "bad-cwd", "cwd must be a relative path")
-    _require("\\" not in value, "bad-cwd", "cwd contains a backslash")
+    _require("\\" not in value and "\x00" not in value, "bad-cwd", "cwd contains an unsafe character")
     candidate = PurePosixPath(value.strip())
     _require(
         not candidate.is_absolute() and not any(part in ("..", "") for part in candidate.parts),
@@ -154,6 +169,8 @@ def _capabilities(value: Any) -> list[str]:
         "bad-capabilities",
         "capabilities must be a list of strings",
     )
+    unknown = sorted(set(value) - set(KNOWN_CAPABILITIES))
+    _require(not unknown, "bad-capabilities", f"unknown capabilities: {', '.join(unknown)}")
     return sorted(set(value))
 
 
@@ -173,7 +190,10 @@ def make_request(
     expires_at: datetime | None = None,
     ttl_seconds: int = 60,
     signature_b64: str | None = None,
+    verified: bool = False,
 ) -> dict[str, Any]:
+    if verified is not True:
+        raise ExecError("subject-unverified", "request needs a verified signature and grant")
     now = issued_at or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -198,12 +218,20 @@ def make_request(
         "expires_at": _iso(expires_at),
         "signature_b64": signature_b64,
     }
-    return validate_request(request)
+    return validate_request(request, verified=verified)
 
 
 def validate_request(
-    request: Mapping[str, Any], *, now: datetime | None = None, allow_expired: bool = False
+    request: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+    allow_expired: bool = False,
+    require_signature: bool = True,
+    require_verified: bool = True,
+    verified: bool = False,
 ) -> dict[str, Any]:
+    if require_verified and verified is not True:
+        raise ExecError("subject-unverified", "request needs a verified signature and grant")
     _require(isinstance(request, Mapping), "malformed-request", "request must be an object")
     _require(request.get("schema_version") == REQUEST_SCHEMA, "malformed-request", "unknown execution request schema")
     timeout = request.get("timeout_seconds")
@@ -215,13 +243,20 @@ def validate_request(
     issued = _timestamp(request.get("issued_at"), "issued_at")
     expires = _timestamp(request.get("expires_at"), "expires_at")
     _require(expires > issued, "malformed-request", "expires_at must be after issued_at")
+    _require(
+        (expires - issued).total_seconds() <= MAX_REQUEST_TTL,
+        "expired-request",
+        "request lifetime exceeds the maximum",
+    )
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    _require(
+        issued <= current + timedelta(seconds=CLOCK_SKEW), "malformed-request", "issued_at is too far in the future"
+    )
     if not allow_expired:
-        _require(
-            expires > (now or datetime.now(timezone.utc)).astimezone(timezone.utc),
-            "expired-request",
-            "request has expired",
-        )
+        _require(expires > current, "expired-request", "request has expired")
     signature = request.get("signature_b64")
+    if require_signature:
+        _require(isinstance(signature, str) and bool(signature.strip()), "bad-signature", "request is unsigned")
     _require(
         signature is None or isinstance(signature, str), "malformed-request", "signature_b64 must be a string or null"
     )
@@ -244,14 +279,18 @@ def validate_request(
 
 
 def request_message(request: Mapping[str, Any]) -> bytes:
-    normalised = validate_request(request, allow_expired=True)
+    normalised = validate_request(request, allow_expired=True, require_signature=False, require_verified=False)
     return json.dumps(
-        {field: normalised.get(field) for field in REQUEST_SIGNED_FIELDS}, sort_keys=True, separators=(",", ":")
+        {field: normalised.get(field) for field in REQUEST_SIGNED_FIELDS},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
 def truncate_output(data: bytes, limit: int = MAX_OUTPUT_BYTES) -> tuple[str, bool]:
     _require(isinstance(limit, int) and limit > 0, "bad-output", "limit must be positive")
+    limit = min(limit, MAX_OUTPUT_BYTES)
     raw = data if isinstance(data, bytes) else str(data).encode("utf-8", "replace")
     truncated = len(raw) > limit
     return raw[:limit].decode("utf-8", "replace"), truncated
@@ -272,17 +311,19 @@ def make_response(
 ) -> dict[str, Any]:
     started = started_at or datetime.now(timezone.utc)
     completed = completed_at or started
+    bounded_stdout, stdout_cut = truncate_output(str(stdout).encode("utf-8", "replace"), MAX_OUTPUT_BYTES)
+    bounded_stderr, stderr_cut = truncate_output(str(stderr).encode("utf-8", "replace"), MAX_OUTPUT_BYTES)
     response = {
         "schema_version": RESPONSE_SCHEMA,
         "request_id": _nonempty(request_id, "request_id"),
         "node_id": _nonempty(node_id, "node_id"),
         "user_id": _nonempty(user_id, "user_id"),
         "exit_code": exit_code,
-        "stdout": str(stdout),
-        "stderr": str(stderr),
+        "stdout": bounded_stdout,
+        "stderr": bounded_stderr,
         "started_at": _iso(started),
         "completed_at": _iso(completed),
-        "truncated": bool(truncated),
+        "truncated": bool(truncated or stdout_cut or stderr_cut),
         "signature_b64": signature_b64,
     }
     return validate_response(response)
@@ -299,14 +340,22 @@ def validate_response(response: Mapping[str, Any]) -> dict[str, Any]:
     _require(
         signature is None or isinstance(signature, str), "malformed-response", "signature_b64 must be a string or null"
     )
+    stdout = str(response.get("stdout") or "")
+    stderr = str(response.get("stderr") or "")
+    _require(
+        len(stdout.encode("utf-8", "replace")) <= MAX_OUTPUT_BYTES
+        and len(stderr.encode("utf-8", "replace")) <= MAX_OUTPUT_BYTES,
+        "bad-output",
+        "response output exceeds the limit",
+    )
     return {
         "schema_version": RESPONSE_SCHEMA,
         "request_id": _nonempty(response.get("request_id"), "request_id"),
         "node_id": _nonempty(response.get("node_id"), "node_id"),
         "user_id": _nonempty(response.get("user_id"), "user_id"),
         "exit_code": code,
-        "stdout": str(response.get("stdout") or ""),
-        "stderr": str(response.get("stderr") or ""),
+        "stdout": stdout,
+        "stderr": stderr,
         "started_at": _iso(_timestamp(response.get("started_at"), "started_at")),
         "completed_at": _iso(_timestamp(response.get("completed_at"), "completed_at")),
         "truncated": bool(response.get("truncated")),
@@ -317,4 +366,4 @@ def validate_response(response: Mapping[str, Any]) -> dict[str, Any]:
 def response_message(response: Mapping[str, Any]) -> bytes:
     normalised = validate_response(response)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")

@@ -17,7 +17,7 @@
       "contract": "collab-schema",
       "file": "collab-schema.json",
       "schema_version": "1.0",
-      "sha256": "bcae8ed7bb62c1a3a435f9ae848ce15bdf8d71b7cb16b204356b5256e96c4f47"
+      "sha256": "bf52ac17f1ec683a1b5325b660bec842c6248eeb135ed8cc42b28967dd0814e6"
     },
     {
       "contract": "distillation-schema",
@@ -35,13 +35,13 @@
       "contract": "exec-schema",
       "file": "exec-schema.json",
       "schema_version": "1.0",
-      "sha256": "a1ca7608afd5498a1c0213367fb341528614d644691568b8566fe1d638dd073f"
+      "sha256": "009529d2611de75f1cc1bdfcc37a445d5656ffa7ec8229fa29e0a14a34d1e3ea"
     },
     {
       "contract": "graph-schema",
       "file": "graph-schema.json",
       "schema_version": "1.0",
-      "sha256": "62e57d4a30fe6b9be52b9f74ebdb58be8584902bedcaca3e76e822fb44d6c6e9"
+      "sha256": "b0155b8a1671774a2dacc693233818cd45de9fbbe206995c02b094765b906b57"
     },
     {
       "contract": "guard-approval",

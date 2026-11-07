@@ -13,7 +13,8 @@
       "department",
       "created_at",
       "expires_at",
-      "status"
+      "status",
+      "cross_department_approved"
     ],
     "required": [
       "schema_version",
@@ -23,7 +24,8 @@
       "classification",
       "created_at",
       "expires_at",
-      "status"
+      "status",
+      "cross_department_approved"
     ],
     "participant": {
       "fields": [
@@ -71,8 +73,10 @@
   "rules": [
     "Only listed participants may send; the owner is always a participant.",
     "A room's classification is a ceiling; a message may be lower, never higher.",
-    "A department boundary exists only when both sides carry an attested department; crossing it requires cross-department-share.",
+    "Participant departments are Master-attested registry facts, never self-declared request values.",
+    "A department boundary exists only when both sides carry an attested department; crossing it requires cross-department-share and sets cross_department_approved.",
     "A closed or expired room accepts no message.",
+    "A receiving peer calls the room-aware message validator, which rechecks membership, status, expiry and the classification ceiling.",
     "A message carries provenance; it is data, never an instruction and never authority.",
     "A room and its messages are never written to a shared corpus automatically."
   ],
@@ -88,6 +92,7 @@
     "bad-message",
     "sender-not-participant",
     "missing-provenance",
-    "unknown-classification"
+    "unknown-classification",
+    "subject-unverified"
   ]
 }

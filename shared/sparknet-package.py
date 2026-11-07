@@ -56,10 +56,14 @@ def _version(value: Any) -> str:
 
 def _path(value: Any) -> str:
     _require(isinstance(value, str) and bool(value.strip()), "bad-artifact-path", "artifact path is empty")
-    _require("\\" not in value, "bad-artifact-path", "artifact path contains a backslash")
+    _require(
+        "\\" not in value and "\x00" not in value, "bad-artifact-path", "artifact path contains an unsafe character"
+    )
     candidate = PurePosixPath(value.strip())
     _require(
-        not candidate.is_absolute() and not any(part in ("..", "") for part in candidate.parts),
+        candidate.as_posix() not in ("", ".")
+        and not candidate.is_absolute()
+        and not any(part in ("..", "", ".") for part in candidate.parts),
         "bad-artifact-path",
         "artifact path escapes the package root",
     )
@@ -137,9 +141,10 @@ def validate_package(package: Mapping[str, Any]) -> dict[str, Any]:
     normalised_artifacts = [_artifact(item) for item in artifacts]
     paths = [item["path"] for item in normalised_artifacts]
     _require(len(paths) == len(set(paths)), "bad-artifact", "artifact paths must be unique")
-    dependencies = package.get("dependencies", [])
+    dependencies = package.get("dependencies")
     _require(isinstance(dependencies, (list, tuple)), "bad-dependency", "dependencies must be a list")
     normalised_dependencies = [_dependency(item) for item in dependencies]
+    signer_node_id = _nonempty(package.get("signer_node_id"), "signer_node_id", "malformed-package")
     signature = package.get("signature_b64")
     _require(signature is None or isinstance(signature, str), "bad-signature", "signature_b64 must be a string or null")
     return {
@@ -147,9 +152,9 @@ def validate_package(package: Mapping[str, Any]) -> dict[str, Any]:
         "package_id": _package_id(package.get("package_id")),
         "version": _version(package.get("version")),
         "description": str(package.get("description") or ""),
-        "artifacts": normalised_artifacts,
-        "dependencies": normalised_dependencies,
-        "signer_node_id": str(package.get("signer_node_id") or ""),
+        "artifacts": sorted(normalised_artifacts, key=lambda item: item["path"]),
+        "dependencies": sorted(normalised_dependencies, key=lambda item: (item["package_id"], item["version"])),
+        "signer_node_id": signer_node_id,
         "created_at": _iso(_timestamp(package.get("created_at"))),
         "signature_b64": signature,
     }
@@ -158,7 +163,7 @@ def validate_package(package: Mapping[str, Any]) -> dict[str, Any]:
 def package_message(package: Mapping[str, Any]) -> bytes:
     normalised = validate_package(package)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def make_index(
@@ -201,7 +206,7 @@ def validate_index(index: Mapping[str, Any]) -> dict[str, Any]:
 def index_message(index: Mapping[str, Any]) -> bytes:
     normalised = validate_index(index)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def install_plan(index: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
@@ -211,6 +216,21 @@ def install_plan(index: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -
     ordered: list[dict[str, str]] = []
     visiting: set[tuple[str, str]] = set()
     done: set[tuple[str, str]] = set()
+
+    def check(key: tuple[str, str], stack: set[tuple[str, str]], depth: int) -> None:
+        _require(depth <= 1000, "dependency-cycle", "dependency chain is too deep")
+        if key in stack:
+            raise PackageError("dependency-cycle", f"dependency cycle at {key[0]} {key[1]}")
+        package = by_key.get(key)
+        if package is None:
+            raise PackageError("unknown-package", f"unknown package {key[0]} {key[1]}")
+        stack.add(key)
+        for dependency in package["dependencies"]:
+            check((dependency["package_id"], dependency["version"]), stack, depth + 1)
+        stack.remove(key)
+
+    for key in by_key:
+        check(key, set(), 0)
 
     def visit(key: tuple[str, str]) -> None:
         if key in done:

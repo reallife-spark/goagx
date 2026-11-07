@@ -85,31 +85,47 @@ def make_room(
     *,
     owner_node_id: str,
     participants: Sequence[Mapping[str, Any]],
-    classification: str = "internal",
+    classification: str,
+    capabilities: Sequence[str] = (),
+    verified: bool = False,
     department: str | None = None,
     room_id: str | None = None,
     ttl_seconds: int = 3600,
     created_at: datetime | None = None,
     expires_at: datetime | None = None,
 ) -> dict[str, Any]:
+    if verified is not True:
+        raise CollabError("subject-unverified", "room creation needs verified participant facts")
     now = created_at or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     if expires_at is None:
         _require(
-            isinstance(ttl_seconds, int) and 1 <= ttl_seconds <= 86400, "malformed-room", "ttl_seconds out of range"
+            isinstance(ttl_seconds, int) and not isinstance(ttl_seconds, bool) and 1 <= ttl_seconds <= 86400,
+            "malformed-room",
+            "ttl_seconds out of range",
         )
         expires_at = now + timedelta(seconds=ttl_seconds)
+    _require(department is None or isinstance(department, str), "malformed-room", "department must be a string or null")
+    normalised_participants = [_participant(item) for item in participants]
+    room_department = department.strip() if isinstance(department, str) and department.strip() else None
+    departments = {item["department"] for item in normalised_participants if item["department"]}
+    crossing = len(departments) > 1 or bool(
+        room_department and any(item["department"] not in (None, room_department) for item in normalised_participants)
+    )
+    if crossing and "cross-department-share" not in set(capabilities):
+        raise CollabError("department-mismatch", "crossing a department needs cross-department-share")
     room = {
         "schema_version": ROOM_SCHEMA,
         "room_id": room_id or "room-" + uuid.uuid4().hex,
         "owner_node_id": _nonempty(owner_node_id, "owner_node_id"),
-        "participants": [_participant(item) for item in participants],
+        "participants": normalised_participants,
         "classification": _classification(classification),
-        "department": department.strip() if isinstance(department, str) and department.strip() else None,
+        "department": room_department,
         "created_at": _iso(now),
         "expires_at": _iso(expires_at),
         "status": "open",
+        "cross_department_approved": crossing,
     }
     return validate_room(room)
 
@@ -126,29 +142,49 @@ def validate_room(room: Mapping[str, Any], *, now: datetime | None = None) -> di
     _require(len(node_ids) == len(set(node_ids)), "duplicate-participant", "participant node ids must be unique")
     owner = _nonempty(room.get("owner_node_id"), "owner_node_id")
     _require(owner in node_ids, "owner-not-participant", "owner must be a participant")
-    status = room.get("status", "open")
-    _require(status in STATUSES, "malformed-room", "unknown room status")
+    status = room.get("status")
+    _require(status in STATUSES, "malformed-room", "room status must be open or closed")
+    approved = room.get("cross_department_approved")
+    _require(isinstance(approved, bool), "malformed-room", "cross_department_approved must be a boolean")
     created = _timestamp(room.get("created_at"), "created_at")
     expires = _timestamp(room.get("expires_at"), "expires_at")
     _require(expires > created, "malformed-room", "expires_at must be after created_at")
+    raw_department = room.get("department")
+    _require(
+        raw_department is None or isinstance(raw_department, str),
+        "malformed-room",
+        "department must be a string or null",
+    )
+    department = raw_department.strip() if isinstance(raw_department, str) and raw_department.strip() else None
+    departments = {item["department"] for item in normalised if item["department"]}
+    if (
+        len(departments) > 1
+        or (department and any(item["department"] not in (None, department) for item in normalised))
+    ) and not approved:
+        raise CollabError("department-mismatch", "cross-department room was not approved")
     return {
         "schema_version": ROOM_SCHEMA,
         "room_id": _nonempty(room.get("room_id"), "room_id"),
         "owner_node_id": owner,
         "participants": normalised,
         "classification": _classification(room.get("classification")),
-        "department": room.get("department")
-        if isinstance(room.get("department"), str) and room.get("department").strip()
-        else None,
+        "department": department,
         "created_at": _iso(created),
         "expires_at": _iso(expires),
         "status": status,
+        "cross_department_approved": approved,
     }
 
 
 def add_participant(
-    room: Mapping[str, Any], participant: Mapping[str, Any], *, capabilities: Sequence[str] = ()
+    room: Mapping[str, Any],
+    participant: Mapping[str, Any],
+    *,
+    capabilities: Sequence[str] = (),
+    verified: bool = False,
 ) -> dict[str, Any]:
+    if verified is not True:
+        raise CollabError("subject-unverified", "participant facts must be verified")
     normalised = validate_room(room)
     _require(normalised["status"] == "open", "room-closed", "room is closed")
     _require(
@@ -159,17 +195,27 @@ def add_participant(
     incoming = _participant(participant)
     if any(item["node_id"] == incoming["node_id"] for item in normalised["participants"]):
         raise CollabError("duplicate-participant", "participant is already in the room")
-    if (
-        normalised.get("department")
-        and incoming.get("department")
-        and normalised["department"] != incoming["department"]
-    ):
+    crossing = bool(
+        (
+            normalised.get("department")
+            and incoming.get("department")
+            and normalised["department"] != incoming["department"]
+        )
+        or (len({item["department"] for item in [*normalised["participants"], incoming] if item["department"]}) > 1)
+    )
+    if crossing and not normalised["cross_department_approved"]:
         _require(
             "cross-department-share" in set(capabilities),
             "department-mismatch",
             "crossing a department needs cross-department-share",
         )
-    return validate_room({**normalised, "participants": [*normalised["participants"], incoming]})
+    return validate_room(
+        {
+            **normalised,
+            "participants": [*normalised["participants"], incoming],
+            "cross_department_approved": bool(normalised["cross_department_approved"] or crossing),
+        }
+    )
 
 
 def make_message(
@@ -224,10 +270,10 @@ def make_message(
         "department": normalised.get("department"),
         "provenance": {"source": provenance["source"].strip(), "digest": provenance.get("digest")},
     }
-    return validate_message(message)
+    return validate_message(message, normalised)
 
 
-def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
+def validate_message(message: Mapping[str, Any], room: Mapping[str, Any] | None = None) -> dict[str, Any]:
     _require(isinstance(message, Mapping), "bad-message", "message must be an object")
     _require(message.get("schema_version") == MESSAGE_SCHEMA, "bad-message", "unknown message schema")
     provenance = message.get("provenance")
@@ -236,7 +282,7 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         "missing-provenance",
         "message requires provenance.source",
     )
-    return {
+    normalised = {
         "schema_version": MESSAGE_SCHEMA,
         "message_id": _nonempty(message.get("message_id"), "message_id", "bad-message"),
         "room_id": _nonempty(message.get("room_id"), "room_id", "bad-message"),
@@ -250,6 +296,29 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         else None,
         "provenance": {"source": provenance["source"].strip(), "digest": provenance.get("digest")},
     }
+    if room is not None:
+        verified_room = validate_room(room)
+        _require(verified_room["status"] == "open", "room-closed", "room is closed")
+        _require(
+            _timestamp(verified_room["expires_at"], "expires_at") > datetime.now(timezone.utc),
+            "room-expired",
+            "room has expired",
+        )
+        _require(normalised["room_id"] == verified_room["room_id"], "bad-message", "message room does not match")
+        _require(
+            any(
+                item["node_id"] == normalised["sender_node_id"] and item["user_id"] == normalised["sender_user_id"]
+                for item in verified_room["participants"]
+            ),
+            "sender-not-participant",
+            "sender is not a participant",
+        )
+        _require(
+            _RANK[normalised["classification"]] <= _RANK[verified_room["classification"]],
+            "classification-downgrade",
+            "a message cannot exceed the room classification",
+        )
+    return normalised
 
 
 def visible_to(room: Mapping[str, Any], node_id: str) -> bool:
