@@ -5,7 +5,7 @@
       "contract": "abac",
       "file": "abac-schema.json",
       "schema_version": "1.0",
-      "sha256": "9acec5362a3221f6fe3644bc89109ed75d9f00a627136334a6d48a00a275772c"
+      "sha256": "f9ca216f22df02b538b5e3f37f77957a63b6d7f7434e77beccaa5b3ec4431a71"
     },
     {
       "contract": "capabilities",

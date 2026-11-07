@@ -46,6 +46,7 @@ GRAPH = load_shared("sparknet-graph.py", "sparknet_graph_memory_gateway")
 HYBRID = load_shared("sparknet-hybrid.py", "sparknet_hybrid_memory_gateway")
 COLLAB = load_shared("sparknet-collab.py", "sparknet_collab_memory_gateway")
 EXEC = load_shared("sparknet-exec-rpc.py", "sparknet_exec_memory_gateway")
+YAML = load_shared("sparknet-yaml.py", "sparknet_yaml_memory_gateway")
 
 HERE = Path(__file__).resolve().parent
 SCHEMA = "sparknet-memory-gateway/1"
@@ -419,9 +420,38 @@ class Gateway:
 
     @staticmethod
     def _page_classification(rel: str) -> str:
-        if rel.startswith(("02_Daily/", "03_Sources/", "_raw/", "_staging/")):
-            return "confidential"
-        return "internal"
+        """Legacy fallback only; the O1 field is authoritative when present."""
+        for prefix, classification in ABAC.LEGACY_PATH_CLASSIFICATION.items():
+            if rel.startswith(prefix):
+                return classification
+        return ABAC.DEFAULT_LEGACY_CLASSIFICATION
+
+    def _page_attributes(self, rel: str, text: str) -> tuple[str, str | None]:
+        """Read classification and department from the note, fail-closed.
+
+        A page with no frontmatter is legacy and uses the path fallback. A page
+        that has frontmatter but an unknown classification is refused rather
+        than silently lowered to a path-derived label.
+        """
+        fallback = self._page_classification(rel)
+        if not text.startswith("---\n"):
+            return fallback, None
+        end = text.find("\n---\n", 4)
+        if end == -1:
+            raise GatewayError(400, "malformed-frontmatter", f"{rel} has an unclosed frontmatter fence")
+        try:
+            meta = YAML.parse_yaml_subset(text[4:end])
+        except YAML.ProvenanceError as exc:
+            raise GatewayError(400, "malformed-frontmatter", f"{rel}: {exc}") from exc
+        if not isinstance(meta, dict):
+            raise GatewayError(400, "malformed-frontmatter", f"{rel} frontmatter is not a mapping")
+        classification = meta.get("classification", fallback)
+        if not isinstance(classification, str) or classification not in ABAC.CLASSIFICATIONS:
+            raise GatewayError(400, "unknown-classification", f"{rel} has an unknown classification")
+        department = meta.get("department")
+        if department is not None and not isinstance(department, str):
+            raise GatewayError(400, "malformed-frontmatter", f"{rel} department must be a string")
+        return classification, (department.strip() or None if isinstance(department, str) else None)
 
     @staticmethod
     def _page_title(text: str, rel: str) -> str:
@@ -445,12 +475,14 @@ class Gateway:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            classification, department = self._page_attributes(rel, text)
             pages.append(
                 {
                     "vault_id": root.name,
                     "path": rel,
                     "title": self._page_title(text, rel),
-                    "classification": self._page_classification(rel),
+                    "classification": classification,
+                    "department": department,
                     "text": text,
                 }
             )
@@ -559,9 +591,25 @@ class Gateway:
         search = self.vault_search(vault_path, query, top_k, scope_paths)
         root = Path(vault_path).resolve()
         graph = self.vault_graph(vault_path, scope_paths)["graph"]
+        by_path = {node["path"]: node for node in graph["nodes"]}
+
+        def attributes(rel: str) -> tuple[str, str | None]:
+            node = by_path.get(rel)
+            if node is not None:
+                return str(node["classification"]), node.get("department")
+            try:
+                text = (root / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return self._page_classification(rel), None
+            return self._page_attributes(rel, text)
+
         semantic = []
+        semantic_departments = set()
         for index, hit in enumerate(search["hits"]):
             rel = hit["path"]
+            classification, department = attributes(rel)
+            if department:
+                semantic_departments.add(department)
             semantic.append(
                 HYBRID.semantic_result(
                     result_id=f"sem-{index + 1}",
@@ -569,13 +617,16 @@ class Gateway:
                     path=rel,
                     score=float(hit["score"]),
                     text=hit["snippet"],
-                    classification=self._page_classification(rel),
+                    classification=classification,
                     provenance={"source": rel},
                 )
             )
         agentic = []
         for index, hit in enumerate(search["hits"][:3]):
             rel = hit["path"]
+            classification, department = attributes(rel)
+            if department:
+                semantic_departments.add(department)
             neighbours = [node.split(":", 1)[-1] for node in GRAPH.neighbors(graph, f"{root.name}:{rel}")]
             agentic.append(
                 HYBRID.agentic_result(
@@ -583,7 +634,7 @@ class Gateway:
                     tool="vault_graph",
                     action="neighbors",
                     result={"path": rel, "neighbors": neighbours},
-                    classification=self._page_classification(rel),
+                    classification=classification,
                     provenance={"source": rel},
                 )
             )
@@ -591,6 +642,7 @@ class Gateway:
             query=query,
             semantic=semantic,
             agentic=agentic,
+            department=next(iter(semantic_departments)) if len(semantic_departments) == 1 else None,
             vault_id=root.name,
         )
         return {"ok": True, "query": query, "bundle": bundle, "rendered": HYBRID.render_for_agent(bundle)}

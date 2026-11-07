@@ -62,6 +62,26 @@ CAPABILITY_MAP = {
     "fabric": ("cluster-serve",),
     "cross_department": ("cross-department-share",),
 }
+#: The O1 ingestion defaults. The writer records one classification; a reader
+#: never derives a lower one from the path. The path fallback exists only for
+#: pages that predate the field and is deliberately conservative.
+INGEST_DEFAULTS = {
+    "master-node": "internal",
+    "peer-node": "internal",
+    "email": "confidential",
+}
+INGEST_MINIMUM = {
+    "master-node": "internal",
+    "peer-node": "internal",
+    "email": "confidential",
+}
+LEGACY_PATH_CLASSIFICATION = {
+    "02_Daily/": "confidential",
+    "03_Sources/": "confidential",
+    "_raw/": "confidential",
+    "_staging/": "confidential",
+}
+DEFAULT_LEGACY_CLASSIFICATION = "internal"
 CLASS_PREFIXES = {
     "shared": ("01_Inbox/share-",),
     "fabric": (

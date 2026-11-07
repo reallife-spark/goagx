@@ -18,6 +18,28 @@
     "confidential",
     "restricted"
   ],
+  "ingestion": {
+    "field": "classification",
+    "department_field": "department",
+    "defaults_by_source": {
+      "master-node": "internal",
+      "peer-node": "internal",
+      "email": "confidential"
+    },
+    "minimum_by_source": {
+      "master-node": "internal",
+      "peer-node": "internal",
+      "email": "confidential"
+    },
+    "legacy_path_fallback": {
+      "02_Daily/": "confidential",
+      "03_Sources/": "confidential",
+      "_raw/": "confidential",
+      "_staging/": "confidential",
+      "default": "internal"
+    },
+    "rule": "The ingestion writer records classification in frontmatter; readers use that field and never accept a caller-supplied label. A page without the field is legacy and uses the path fallback. An unknown or malformed field is denied, never guessed."
+  },
   "decision_fields": [
     "allowed",
     "reason",
