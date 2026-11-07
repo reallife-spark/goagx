@@ -26,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sparknet_loader import load_shared
 
 _EVENT = load_shared("sparknet-event.py", "sparknet_event_bus_event")
+EventError = _EVENT.EventError
+MAX_MESSAGE_BYTES = 8 << 20
+MAX_LINE_BYTES = 64 << 10
 
 
 class NatsError(RuntimeError):
@@ -49,7 +52,11 @@ class BusAddress:
             raise NatsError("bad-url", f"unsupported NATS scheme {parts.scheme!r}")
         if not parts.hostname:
             raise NatsError("bad-url", "NATS URL has no host")
-        return cls(parts.hostname, parts.port or 4222)
+        try:
+            port = parts.port or 4222
+        except ValueError as exc:
+            raise NatsError("bad-url", "NATS URL has an invalid port") from exc
+        return cls(parts.hostname, port)
 
 
 class NatsClient:
@@ -121,6 +128,7 @@ class NatsClient:
         return payload
 
     def subscribe_once(self, subject: str, *, timeout: float | None = None) -> dict[str, Any]:
+        self._subject(subject)
         self._sid += 1
         sid = str(self._sid)
         self._send(f"SUB {subject} {sid}\r\n".encode("ascii"))
@@ -138,8 +146,15 @@ class NatsClient:
                 parts = line.decode("ascii", "replace").split()
                 if len(parts) < 4:
                     raise NatsError("bad-message", "malformed MSG line")
-                size = int(parts[-1])
+                try:
+                    size = int(parts[-1])
+                except ValueError as exc:
+                    raise NatsError("bad-message", "MSG size is not an integer") from exc
+                if size < 0 or size > MAX_MESSAGE_BYTES:
+                    raise NatsError("bad-message", "MSG size is out of range")
                 payload = self._reader.read(size)
+                if len(payload) != size:
+                    raise NatsError("bad-message", "MSG payload is truncated")
                 self._reader.read(2)
                 try:
                     event = json.loads(payload.decode("utf-8"))
@@ -151,20 +166,28 @@ class NatsClient:
         finally:
             self._send(f"UNSUB {sid}\r\n".encode("ascii"))
 
-    def _pub_frame(self, subject: str, payload: bytes) -> bytes:
-        if not subject or any(ch.isspace() for ch in subject):
+    @staticmethod
+    def _subject(subject: str) -> None:
+        if not subject or any(ch.isspace() or ch in "\r\n" for ch in subject):
             raise NatsError("bad-subject", "subject must be non-empty and contain no whitespace")
+
+    def _pub_frame(self, subject: str, payload: bytes) -> bytes:
+        self._subject(subject)
+        if len(payload) > MAX_MESSAGE_BYTES:
+            raise NatsError("bad-payload", "payload exceeds the bus limit")
         return f"PUB {subject} {len(payload)}\r\n".encode("ascii") + payload + b"\r\n"
 
     def _line(self) -> bytes:
         if self._reader is None:
             raise NatsError("not-connected", "NATS client is not connected")
         try:
-            line = self._reader.readline()
+            line = self._reader.readline(MAX_LINE_BYTES + 1)
         except OSError as exc:
             raise NatsError("read-failed", str(exc)) from exc
         if not line:
             raise NatsError("closed", "NATS connection closed")
+        if len(line) > MAX_LINE_BYTES:
+            raise NatsError("bad-line", "NATS line exceeds the limit")
         return line.rstrip(b"\r\n")
 
     def _send(self, data: bytes) -> None:
@@ -180,6 +203,9 @@ class NatsClient:
             line = self._line()
             if line == b"PONG":
                 return
+            if line.startswith(b"PING"):
+                self._send(b"PONG\r\n")
+                continue
             if line.startswith(b"-ERR"):
                 raise NatsError("server-error", line.decode("utf-8", "replace"))
 

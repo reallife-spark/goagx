@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         received = BUS.subscribe_once(args.url, args.subject, timeout=args.timeout)
         print(json.dumps(received, indent=2, sort_keys=True))
         return 0
-    except (OSError, ValueError, BUS.NatsError) as exc:
+    except (OSError, ValueError, BUS.NatsError, BUS.EventError) as exc:
         print(f"sparknet-event: {exc}", file=sys.stderr)
         return 2
 

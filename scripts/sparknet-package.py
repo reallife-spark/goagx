@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from sparknet_loader import load_shared
 
 PACKAGE = load_shared("sparknet-package.py", "sparknet_package_cli")
-SKIP_PARTS = {".git", ".state", "__pycache__", ".pytest_cache", ".ruff_cache"}
+SKIP_PARTS = {".git", ".state", "keys", "manifests", "__pycache__", ".pytest_cache", ".ruff_cache"}
+SKIP_NAMES = {"secrets-index.json", "user-env-manifest.json", ".env"}
 
 
 def _dep(value: str) -> dict[str, str]:
@@ -52,7 +53,9 @@ def _parser() -> argparse.ArgumentParser:
 def _artifacts(root: Path) -> list[dict]:
     rows = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or any(part in SKIP_PARTS for part in path.parts):
+        if not path.is_file() or path.is_symlink() or any(part in SKIP_PARTS for part in path.parts):
+            continue
+        if path.name in SKIP_NAMES:
             continue
         data = path.read_bytes()
         rows.append(

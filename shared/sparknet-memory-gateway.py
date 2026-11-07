@@ -189,12 +189,14 @@ class Gateway:
             raise GatewayError(503, "registry-invalid", "registry has no master key")
         return registry, self.authz.public_key_from_b64(encoded)
 
-    def _identity(self) -> dict[str, Any] | None:
+    def _identity(self) -> dict[str, Any]:
         try:
             value = json.loads(self.identity_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return value if isinstance(value, dict) else None
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GatewayError(503, "identity-unavailable", str(exc)) from exc
+        if not isinstance(value, dict):
+            raise GatewayError(503, "identity-invalid", "identity is not an object")
+        return value
 
     def _grant(self, token: str) -> dict[str, Any] | None:
         try:
@@ -291,7 +293,15 @@ class Gateway:
             requested = str(body.get("vault_path") or "").strip()
             if requested and Path(requested).expanduser().resolve() != Path(vault_path).resolve():
                 raise GatewayError(403, "vault-forbidden", "a session grant is bound to the role vault")
-            constraints = {"vault_path": vault_path, "scope": {"user_id": user_id}}
+            try:
+                subject = ABAC.subject_from_grant(grant, Path(vault_path).name, verified=True)
+            except ABAC.AbacError as exc:
+                raise GatewayError(403, exc.code, exc.message) from exc
+            constraints = {
+                "vault_path": vault_path,
+                "scope": {"user_id": user_id},
+                "scope_paths": list(subject["scope"]),
+            }
             return "grant", user_id, vault_path, constraints
 
         user = self._webui_user(token)
@@ -313,6 +323,15 @@ class Gateway:
             return ABAC.resource_class_for(rel) == "authority"
         except ABAC.AbacError:
             return True
+
+    @staticmethod
+    def _scope_row(rel: str, scope_paths: list[str] | None) -> bool:
+        if scope_paths is None:
+            return True
+        rel = rel.strip("/")
+        return any(
+            rel == str(prefix).strip("/") or rel.startswith(str(prefix).strip("/") + "/") for prefix in scope_paths
+        )
 
     def _vault_candidate(self, vault_path: str, rel: str) -> Path:
         root = Path(vault_path).expanduser().resolve()
@@ -342,6 +361,8 @@ class Gateway:
             rel = path.relative_to(root)
             if any(part in VAULT_SKIP_PARTS for part in rel.parts):
                 continue
+            if path.name in VAULT_SKIP_NAMES:
+                continue
             if self._authority(rel.as_posix()):
                 continue
             if path.suffix.lower() not in VAULT_SUFFIXES:
@@ -362,11 +383,17 @@ class Gateway:
                 return line[2:].strip() or Path(rel).stem
         return Path(rel).stem
 
-    def vault_graph(self, vault_path: str) -> dict[str, Any]:
+    def vault_graph(self, vault_path: str, scope_paths: list[str] | None = None) -> dict[str, Any]:
         root = Path(vault_path).resolve()
+        if not root.is_dir():
+            raise GatewayError(404, "not-found", "vault path is not a directory")
         pages = []
-        for path in self._vault_files(vault_path)[:500]:
+        for path in self._vault_files(vault_path):
             rel = path.relative_to(root).as_posix()
+            if not self._scope_row(rel, scope_paths):
+                continue
+            if len(pages) >= 500:
+                break
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -386,7 +413,9 @@ class Gateway:
             raise GatewayError(400, exc.code, exc.message) from exc
         return {"ok": True, "graph": graph}
 
-    def vault_list(self, vault_path: str, prefix: str = "", limit: int = 500) -> dict[str, Any]:
+    def vault_list(
+        self, vault_path: str, prefix: str = "", limit: int = 500, scope_paths: list[str] | None = None
+    ) -> dict[str, Any]:
         base = self._vault_candidate(vault_path, prefix)
         rows = []
         if base.is_dir():
@@ -396,7 +425,11 @@ class Gateway:
                 rel = path.relative_to(Path(vault_path).resolve()).as_posix()
                 if any(part in VAULT_SKIP_PARTS for part in Path(rel).parts):
                     continue
+                if path.name in VAULT_SKIP_NAMES:
+                    continue
                 if self._authority(rel):
+                    continue
+                if not self._scope_row(rel, scope_paths):
                     continue
                 if path.suffix.lower() not in VAULT_SUFFIXES:
                     continue
@@ -404,30 +437,40 @@ class Gateway:
                 if len(rows) >= max(1, min(int(limit), 2000)):
                     break
         elif base.is_file():
-            rows = [base.relative_to(Path(vault_path).resolve()).as_posix()]
+            rel = base.relative_to(Path(vault_path).resolve()).as_posix()
+            if base.name not in VAULT_SKIP_NAMES and self._scope_row(rel, scope_paths):
+                rows = [rel]
         return {"ok": True, "vault": Path(vault_path).name, "paths": rows}
 
-    def vault_read(self, vault_path: str, rel: str) -> dict[str, Any]:
+    def vault_read(self, vault_path: str, rel: str, scope_paths: list[str] | None = None) -> dict[str, Any]:
         path = self._vault_candidate(vault_path, rel)
         if not path.is_file() or path.is_symlink():
             raise GatewayError(404, "not-found", "vault page not found")
+        relative = path.relative_to(Path(vault_path).resolve()).as_posix()
+        if not self._scope_row(relative, scope_paths):
+            raise GatewayError(403, "scope-refused", "page is outside the signed grant scope")
         size = path.stat().st_size
         if size > MAX_VAULT_FILE:
             raise GatewayError(413, "too-large", "vault page exceeds the read limit")
         return {
             "ok": True,
-            "path": path.relative_to(Path(vault_path).resolve()).as_posix(),
+            "path": relative,
             "content": path.read_text(encoding="utf-8", errors="replace"),
             "bytes": size,
         }
 
-    def vault_search(self, vault_path: str, query: str, top_k: int = 8) -> dict[str, Any]:
+    def vault_search(
+        self, vault_path: str, query: str, top_k: int = 8, scope_paths: list[str] | None = None
+    ) -> dict[str, Any]:
         terms = [term.lower() for term in re.split(r"\s+", query.strip()) if len(term) > 1][:8]
         if not terms:
             raise GatewayError(400, "malformed", "query must contain at least one word")
         scored = []
         root = Path(vault_path).resolve()
         for path in self._vault_files(vault_path):
+            rel = path.relative_to(root).as_posix()
+            if not self._scope_row(rel, scope_paths):
+                continue
             try:
                 if path.stat().st_size > MAX_VAULT_FILE:
                     continue
@@ -442,7 +485,7 @@ class Gateway:
             snippet = text[max(0, first - 180) : first + 420].replace("\n", " ").strip()
             scored.append(
                 {
-                    "path": path.relative_to(root).as_posix(),
+                    "path": rel,
                     "score": score,
                     "snippet": snippet,
                 }
@@ -469,8 +512,9 @@ class Gateway:
                 "capture target must be under 01_Inbox/, _raw/, 04_Evergreen/, 05_Knowledge/ or 06_Projects/",
             )
         path = self._vault_candidate(vault_path, target)
-        if not str(path).startswith(str(Path(vault_path).resolve())):
-            raise GatewayError(403, "vault-forbidden", "target escapes the user vault")
+        relative = path.relative_to(Path(vault_path).resolve())
+        if not relative.parts or relative.parts[0] not in VAULT_CAPTURE_PREFIXES:
+            raise GatewayError(403, "vault-forbidden", "capture target must be under an allowed prefix")
         if path.exists():
             stem = path.with_suffix("")
             for index in range(2, 100):
@@ -608,16 +652,21 @@ class Gateway:
             merged["scope"] = {**constraints["scope"], **merged["scope"]}
             merged["scope"]["user_id"] = constraints["scope"]["user_id"]
         if path.startswith("/v1/vault/"):
+            if path == "/v1/vault/capture" and method != "POST":
+                raise GatewayError(405, "method-not-allowed", "vault capture requires POST")
             if path == "/v1/vault/list":
                 payload = self.vault_list(
                     vault_path,
                     prefix=str(merged.get("prefix") or ""),
                     limit=int(merged.get("limit") or 500),
+                    scope_paths=constraints.get("scope_paths"),
                 )
                 self.audit(kind, actor_id, "vault.list", vault_path, {"prefix": merged.get("prefix")})
                 return 200, payload
             if path == "/v1/vault/read":
-                payload = self.vault_read(vault_path, str(merged.get("path") or ""))
+                payload = self.vault_read(
+                    vault_path, str(merged.get("path") or ""), scope_paths=constraints.get("scope_paths")
+                )
                 self.audit(kind, actor_id, "vault.read", vault_path, {"path": payload.get("path")})
                 return 200, payload
             if path == "/v1/vault/search":
@@ -625,11 +674,12 @@ class Gateway:
                     vault_path,
                     str(merged.get("query") or ""),
                     int(merged.get("top_k") or 8),
+                    scope_paths=constraints.get("scope_paths"),
                 )
                 self.audit(kind, actor_id, "vault.search", vault_path, {"query": merged.get("query")})
                 return 200, payload
             if path == "/v1/vault/graph":
-                payload = self.vault_graph(vault_path)
+                payload = self.vault_graph(vault_path, constraints.get("scope_paths"))
                 self.audit(kind, actor_id, "vault.graph", vault_path, {"nodes": len(payload["graph"]["nodes"])})
                 return 200, payload
             if path == "/v1/vault/capture":
@@ -638,6 +688,8 @@ class Gateway:
                 return 200, payload
             raise GatewayError(404, "not-found", "unknown vault route")
         if path == "/v1/rfi":
+            if method != "POST":
+                raise GatewayError(405, "method-not-allowed", "RFI requests require POST")
             payload = self.rfi(str(merged.get("question") or ""), list(merged.get("scope") or []))
             self.audit(
                 kind,
@@ -647,6 +699,8 @@ class Gateway:
                 {"scope": merged.get("scope"), "request": payload.get("request", {}).get("request_id")},
             )
             return 200, payload
+        if path in MUTATING and method != "POST":
+            raise GatewayError(405, "method-not-allowed", f"{path} requires POST")
         if path == "/v1/memory/remember":
             # The Go remember envelope is {vault_path, record}; the scope belongs
             # inside the record. A top-level scope is an unknown field there.
@@ -660,7 +714,7 @@ class Gateway:
                 record["scope"] = record_scope
         if path.startswith("/v1/delegates/"):
             if isinstance(merged.get("plan"), dict):
-                merged["plan"].setdefault("user_id", actor_id)
+                merged["plan"]["user_id"] = actor_id
             if method == "POST" and path == "/v1/delegates/plan":
                 self.audit(
                     kind, actor_id, "delegate.plan", vault_path, {"plan_id": merged.get("plan", {}).get("plan_id")}
