@@ -43,6 +43,7 @@ from sparknet_loader import load_shared
 
 ABAC = load_shared("sparknet-abac.py", "sparknet_abac_memory_gateway")
 GRAPH = load_shared("sparknet-graph.py", "sparknet_graph_memory_gateway")
+HYBRID = load_shared("sparknet-hybrid.py", "sparknet_hybrid_memory_gateway")
 
 HERE = Path(__file__).resolve().parent
 SCHEMA = "sparknet-memory-gateway/1"
@@ -457,6 +458,48 @@ class Gateway:
             raise GatewayError(400, exc.code, exc.message) from exc
         return {"ok": True, "graph": graph}
 
+    def vault_hybrid(
+        self, vault_path: str, query: str, top_k: int = 8, scope_paths: list[str] | None = None
+    ) -> dict[str, Any]:
+        search = self.vault_search(vault_path, query, top_k, scope_paths)
+        root = Path(vault_path).resolve()
+        graph = self.vault_graph(vault_path, scope_paths)["graph"]
+        semantic = []
+        for index, hit in enumerate(search["hits"]):
+            rel = hit["path"]
+            semantic.append(
+                HYBRID.semantic_result(
+                    result_id=f"sem-{index + 1}",
+                    source="vault_search",
+                    path=rel,
+                    score=float(hit["score"]),
+                    text=hit["snippet"],
+                    classification=self._page_classification(rel),
+                    provenance={"source": rel},
+                )
+            )
+        agentic = []
+        for index, hit in enumerate(search["hits"][:3]):
+            rel = hit["path"]
+            neighbours = [node.split(":", 1)[-1] for node in GRAPH.neighbors(graph, f"{root.name}:{rel}")]
+            agentic.append(
+                HYBRID.agentic_result(
+                    result_id=f"agt-{index + 1}",
+                    tool="vault_graph",
+                    action="neighbors",
+                    result={"path": rel, "neighbors": neighbours},
+                    classification=self._page_classification(rel),
+                    provenance={"source": rel},
+                )
+            )
+        bundle = HYBRID.bundle(
+            query=query,
+            semantic=semantic,
+            agentic=agentic,
+            vault_id=root.name,
+        )
+        return {"ok": True, "query": query, "bundle": bundle, "rendered": HYBRID.render_for_agent(bundle)}
+
     def vault_list(
         self, vault_path: str, prefix: str = "", limit: int = 500, scope_paths: list[str] | None = None
     ) -> dict[str, Any]:
@@ -725,6 +768,15 @@ class Gateway:
             if path == "/v1/vault/graph":
                 payload = self.vault_graph(vault_path, constraints.get("scope_paths"))
                 self.audit(kind, actor_id, "vault.graph", vault_path, {"nodes": len(payload["graph"]["nodes"])})
+                return 200, payload
+            if path == "/v1/vault/hybrid":
+                payload = self.vault_hybrid(
+                    vault_path,
+                    str(merged.get("query") or ""),
+                    int(merged.get("top_k") or 8),
+                    constraints.get("scope_paths"),
+                )
+                self.audit(kind, actor_id, "vault.hybrid", vault_path, {"query": merged.get("query")})
                 return 200, payload
             if path == "/v1/vault/capture":
                 payload = self.vault_capture(vault_path, merged)
