@@ -228,3 +228,8 @@ implementations; none of them signs or grants:
 | `sparknet-exec-rpc.py` | `contracts/exec-schema.json` | Validates signed argv-only execution requests and bounded responses; no shell. |
 | `sparknet-collab.py` | `contracts/collab-schema.json` | Validates bounded collaboration rooms and messages; no authority. |
 | `sparknet-package.py` | `contracts/package-schema.json` | Validates signed packages and computes a dependency-first install plan; never executes. |
+
+The canonical bytes are pinned by `contracts/vectors/foundations.json` and
+mirrored at `gospark/spec/sparknet/foundations-vectors.json`.
+`gospark/internal/foundations` is the Go canonicalizer; its test reads the same
+vectors, so a Python-only canonical dialect fails the gate.

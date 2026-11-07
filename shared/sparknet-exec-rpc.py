@@ -279,12 +279,19 @@ def validate_request(
 
 
 def request_message(request: Mapping[str, Any]) -> bytes:
-    normalised = validate_request(request, allow_expired=True, require_signature=False, require_verified=False)
+    normalised = validate_request(
+        request,
+        now=_timestamp(request.get("issued_at"), "issued_at"),
+        allow_expired=True,
+        require_signature=False,
+        require_verified=False,
+    )
     return json.dumps(
         {field: normalised.get(field) for field in REQUEST_SIGNED_FIELDS},
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
+        ensure_ascii=False,
     ).encode("utf-8")
 
 
@@ -366,4 +373,6 @@ def validate_response(response: Mapping[str, Any]) -> dict[str, Any]:
 def response_message(response: Mapping[str, Any]) -> bytes:
     normalised = validate_response(response)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False).encode(
+        "utf-8"
+    )

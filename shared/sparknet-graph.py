@@ -216,4 +216,4 @@ def shortest_path(graph: Mapping[str, Any], source: str, target: str) -> list[st
 
 
 def to_json(graph: Mapping[str, Any]) -> str:
-    return json.dumps(graph, sort_keys=True, separators=(",", ":"))
+    return json.dumps(graph, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False)

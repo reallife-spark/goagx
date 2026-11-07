@@ -327,4 +327,4 @@ def visible_to(room: Mapping[str, Any], node_id: str) -> bool:
 
 
 def to_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False)

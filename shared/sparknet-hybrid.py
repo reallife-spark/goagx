@@ -75,7 +75,7 @@ def _provenance(value: Any) -> dict[str, Any]:
 def _json_value(value: Any, field: str) -> Any:
     _require(value is not None, "bad-result", f"{field} is missing")
     try:
-        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
         raise HybridError("bad-result", f"{field} is not strict JSON") from exc
     return value
@@ -242,6 +242,14 @@ def validate_bundle(payload: Mapping[str, Any]) -> dict[str, Any]:
         "department": payload.get("department"),
         "vault_id": payload.get("vault_id", ""),
     }
+
+
+def bundle_message(payload: Mapping[str, Any]) -> bytes:
+    """Canonical bytes of the validated bundle; a cross-language vector target."""
+    normalised = validate_bundle(payload)
+    return json.dumps(normalised, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def render_for_agent(payload: Mapping[str, Any]) -> str:

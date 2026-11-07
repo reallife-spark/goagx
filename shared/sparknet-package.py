@@ -163,7 +163,9 @@ def validate_package(package: Mapping[str, Any]) -> dict[str, Any]:
 def package_message(package: Mapping[str, Any]) -> bytes:
     normalised = validate_package(package)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def make_index(
@@ -206,7 +208,9 @@ def validate_index(index: Mapping[str, Any]) -> dict[str, Any]:
 def index_message(index: Mapping[str, Any]) -> bytes:
     normalised = validate_index(index)
     projected = {key: value for key, value in normalised.items() if key != "signature_b64"}
-    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return json.dumps(projected, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def install_plan(index: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
