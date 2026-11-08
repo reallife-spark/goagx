@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -46,6 +48,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1352,38 +1355,61 @@ def append_block(vault: Path, data: dict[str, Any]) -> dict[str, Any]:
     this node's identity key, and the node's public key travels inline in the
     block so an offline verifier needs no local key material. `data.signatures`
     (for approvals, `grant_use` and `inbox_acceptance`) still bind the record
-    separately; the header
-    signature binds the block's position and payload, so a deleted, reordered or
-    edited block is detectable.
+    separately; the header signature binds the block's position and payload, so a
+    deleted, reordered or edited block is detectable.
+
+    The whole read-modify-write runs under an exclusive lock on a sibling lock
+    file, and the replacement uses a unique temp file. Without both, two
+    appenders can read the same head and each report success while only one block
+    reaches disk — a lost `grant_use` block is a replayable grant.
     """
     ledger_path = vault / "blockchain" / "ledger.json"
-    ledger = load_ledger(ledger_path) if ledger_path.is_file() else {"version": "2.0", "genesis_hash": "", "blocks": []}
-    blocks = ledger.setdefault("blocks", [])
-    previous = blocks[-1]["hash"] if blocks else str(ledger.get("genesis_hash", ""))
-    index = len(blocks)
-    authz = _load_authz()
-    node_path = _node_key_path(vault)
-    if not node_path.is_file():
-        raise ProvenanceError(f"{node_path} not found (run `make keys`)")
-    _refuse_loose_key(node_path)
-    node_key = authz.load_private_key(node_path)
-    block: dict[str, Any] = {
-        "block_id": f"{index:08d}",
-        "prev_hash": previous,
-        "timestamp": _iso(_now()),
-        "node_pubkey_b64": _node_public_b64(vault),
-        "data": data,
-    }
-    block["signature"] = authz.sign_bytes(node_key, block_header_signable(block))
-    block["hash"] = block_hash(block)
-    blocks.append(block)
-
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = ledger_path.with_name(f".{ledger_path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(ledger, indent=2) + "\n")
-    tmp.chmod(0o600)
-    os.replace(tmp, ledger_path)
-    _adopt_vault_owner(ledger_path, vault)
+    lock_path = ledger_path.with_name(ledger_path.name + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            ledger = (
+                load_ledger(ledger_path)
+                if ledger_path.is_file()
+                else {"version": "2.0", "genesis_hash": "", "blocks": []}
+            )
+            blocks = ledger.setdefault("blocks", [])
+            previous = blocks[-1]["hash"] if blocks else str(ledger.get("genesis_hash", ""))
+            index = len(blocks)
+            authz = _load_authz()
+            node_path = _node_key_path(vault)
+            if not node_path.is_file():
+                raise ProvenanceError(f"{node_path} not found (run `make keys`)")
+            _refuse_loose_key(node_path)
+            node_key = authz.load_private_key(node_path)
+            block: dict[str, Any] = {
+                "block_id": f"{index:08d}",
+                "prev_hash": previous,
+                "timestamp": _iso(_now()),
+                "node_pubkey_b64": _node_public_b64(vault),
+                "data": data,
+            }
+            block["signature"] = authz.sign_bytes(node_key, block_header_signable(block))
+            block["hash"] = block_hash(block)
+            blocks.append(block)
+
+            fd, temp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=f".{ledger_path.name}.", suffix=".tmp")
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w") as handle:
+                    handle.write(json.dumps(ledger, indent=2) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_name, ledger_path)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    os.unlink(temp_name)
+                raise
+            _adopt_vault_owner(ledger_path, vault)
+            _adopt_vault_owner(lock_path, vault)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     ok, detail = verify_chain(ledger)
     if not ok:
         raise ProvenanceError(f"appended a block that does not verify: {detail}")
@@ -1673,6 +1699,23 @@ def _safe_rel(raw: str) -> PurePosixPath:
     return path
 
 
+def safe_vault_target(vault: Path, rel: str) -> Path:
+    """Resolve a vault-relative target without following a symlink component."""
+    root = Path(vault).resolve()
+    target_rel = _safe_rel(rel)
+    target = (root / target_rel).resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ProvenanceError(f"target escapes the vault: {rel!r}") from exc
+    cursor = root
+    for part in target_rel.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ProvenanceError(f"target path contains a symlink: {rel!r}")
+    return target
+
+
 def grant_scope_allows(scope: list[str], target_rel: str) -> bool:
     """Is this vault-relative write inside the grant's scope?
 
@@ -1701,9 +1744,12 @@ def quarantine_rel(vault: Path, grant_id: str, name: str) -> str:
     The material is kept (the vault does not delete what it was given) while
     authority is never widened by a signature.
     """
+    if not isinstance(grant_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", grant_id):
+        raise ProvenanceError("grant_id is not a safe path component")
+    safe_name = _safe_rel(name)
     legacy = contract()["layout"]["legacy_map"]
     raw_dir = legacy.get("_raw", "_raw")
-    return str(PurePosixPath(raw_dir, "grant-quarantine", grant_id, name))
+    return str(PurePosixPath(raw_dir, "grant-quarantine", grant_id, safe_name))
 
 
 def consumed_grant_nonces(vault: Path) -> set[str]:
@@ -1981,7 +2027,7 @@ def write_granted_note(
         outcome = "quarantined"
         note_rel = quarantine_rel(vault, str(grant["grant_id"]), rel.name)
 
-    note_path = vault / note_rel
+    note_path = safe_vault_target(vault, note_rel)
     if note_path.exists():
         raise ProvenanceError(f"{note_rel} already exists — refusing to overwrite a vault note")
 
@@ -2205,7 +2251,7 @@ def patch_granted_note(
     )
     rel = _safe_rel(target)
     _target_within_scope(rel, grant, "patch")
-    note_path = vault / rel
+    note_path = safe_vault_target(vault, rel)
     if not note_path.is_file():
         raise ProvenanceError(f"patch target does not exist: {rel!s}")
     if not isinstance(patch, dict) or not isinstance(patch.get("old"), str) or not isinstance(patch.get("new"), str):
@@ -2247,10 +2293,17 @@ def note_paths(vault: Path) -> list[Path]:
     skip = {"__pycache__", ".git", ".state", ".cache", "_staging"}
     paths: list[Path] = []
     for name in dirs:
-        for path in sorted((vault / name).rglob("*.md")):
-            if skip & set(path.parts) or path.name == ".gitkeep":
-                continue
-            paths.append(path)
+        base = vault / name
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            directory = Path(dirpath)
+            dirnames[:] = sorted(child for child in dirnames if not (directory / child).is_symlink())
+            for filename in sorted(filenames):
+                if not filename.endswith(".md"):
+                    continue
+                path = directory / filename
+                if path.is_symlink() or skip & set(path.parts) or path.name == ".gitkeep":
+                    continue
+                paths.append(path)
     return paths
 
 
