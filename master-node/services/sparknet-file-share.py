@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import importlib.util
 import json
 import os
 import signal
@@ -21,6 +20,9 @@ import threading
 import urllib.parse
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -31,13 +33,7 @@ MAX_BYTES = 2 * 1024 * 1024
 def _load(name: str, path: Path) -> Any:
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 def _load_http() -> Any:
@@ -173,9 +169,22 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, ShareError) as exc:
         print(f"sparknet-file-share: {exc}", file=sys.stderr)
         return 2
-    server = http.serve(router_for(share), bind=args.bind, port=args.port, public_keys=share.trusted_keys)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
-    thread.start()
+    router = router_for(share)
+    listener = http.listen(
+        [
+            http.Route(
+                "/",
+                lambda request: router(request.method, request.path, request.json or {}, request.identity),
+                auth="signed",
+                prefix=True,
+            )
+        ],
+        name="file-share",
+        bind=args.bind,
+        port=args.port,
+        public_keys=share.trusted_keys,
+    )
+    listener.start()
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
@@ -184,9 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         while not stopping.wait(1.0):
             pass
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        listener.stop()
     return 0
 
 

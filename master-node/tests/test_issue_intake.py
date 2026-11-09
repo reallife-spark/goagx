@@ -7,14 +7,12 @@ key/node binding, not just that the source file contains a string.
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-import threading
 from datetime import datetime, timedelta, timezone
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
+
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -26,12 +24,7 @@ PEER_NODE = "sparknet-node-0002"
 
 
 def _load(name: str, path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 intake = _load("sparknet_issue_intake_test", INTAKE_PATH)
@@ -83,16 +76,17 @@ def _payload(**overrides) -> dict:
 
 def _server(tmp_path: Path, *, capability: bool = True, key: object | None = None):
     store = intake.IssueStore(tmp_path / "issues.jsonl", state_dir=tmp_path / "state")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), intake._Handler)
-    server.directory = _directory(capability=capability)
-    server.spool = tmp_path / "telemetry.jsonl"
-    server.seen_nonces = set()
-    server.request_queue = intake.RequestQueue(tmp_path / "requests")
-    server.issue_keys = {PEER_NODE: key} if key is not None else {}
-    server.issue_store = store
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, thread, store, f"http://127.0.0.1:{server.server_address[1]}"
+    listener = intake.build_listener(
+        bind="127.0.0.1",
+        port=0,
+        directory=_directory(capability=capability),
+        spool=tmp_path / "telemetry.jsonl",
+        request_dir=tmp_path / "requests",
+        issue_keys={PEER_NODE: key} if key is not None else {},
+        issue_store=store,
+    )
+    listener.start()
+    return listener, listener, store, f"http://127.0.0.1:{listener.servers[0].server_address[1]}"
 
 
 def _post(base: str, payload: dict, private: object) -> tuple[int, dict]:

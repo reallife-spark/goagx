@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import importlib.util
 import itertools
 import json
 import os
@@ -42,6 +41,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -53,14 +53,7 @@ CLOCK = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 
 
 def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Not optional: @dataclass resolves its own module through sys.modules and
-    # fails with an AttributeError about __dict__ that names neither cause nor file.
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 @pytest.fixture(scope="module")
@@ -1147,11 +1140,7 @@ def test_it_answers_over_a_unix_socket_and_records_to_the_ledger(signer, authz, 
         assert response["entry"]["signature_b64"] == data["signature_b64"]
 
         # And the chain must be intact, checked by the module that owns verification.
-        import importlib.util as _u
-
-        spec = _u.spec_from_file_location("ledger_for_isolation", ROLE_ROOT / "services" / "sparknet-ledger.py")
-        ledger_module = _u.module_from_spec(spec)
-        spec.loader.exec_module(ledger_module)
+        ledger_module = load_by_path("ledger_for_isolation", ROLE_ROOT / "services" / "sparknet-ledger.py")
         ok, detail = ledger_module.verify_chain(ledger)
         assert ok, detail
     finally:
@@ -1384,11 +1373,7 @@ def test_two_concurrent_requests_serialise_into_one_intact_chain(signer, tmp_pat
         assert blocks[1]["prev_hash"] == blocks[0]["hash"]
         assert blocks[2]["prev_hash"] == blocks[1]["hash"]
 
-        spec = importlib.util.spec_from_file_location(
-            "ledger_for_concurrency", ROLE_ROOT / "services" / "sparknet-ledger.py"
-        )
-        ledger_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(ledger_module)
+        ledger_module = load_by_path("ledger_for_concurrency", ROLE_ROOT / "services" / "sparknet-ledger.py")
         ok, detail = ledger_module.verify_chain(ledger)
         assert ok, detail
     finally:
@@ -1496,12 +1481,7 @@ class _SerialisingSigner:
 
 
 def _serve_forever(signer, socket_path: Path, *, read_timeout: float | None = None) -> None:
-    import importlib.util as _u
-
-    spec = _u.spec_from_file_location("signer_serve_helper", SIGNER_PATH)
-    module = _u.module_from_spec(spec)
-    sys.modules["signer_serve_helper"] = module
-    spec.loader.exec_module(module)
+    module = load_by_path("signer_serve_helper", SIGNER_PATH)
     try:
         if read_timeout is None:
             module.serve(signer, socket_path)
@@ -1772,10 +1752,7 @@ def test_ledger_verification_pins_the_operational_key(signer, signer_module, aut
     """
     ledger_path = signer.ledger_path
     ledger = json.loads(ledger_path.read_text())
-    spec = importlib.util.spec_from_file_location("ledger_for_key_pin", ROLE_ROOT / "services" / "sparknet-ledger.py")
-    ledger_module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(ledger_module)
+    ledger_module = load_by_path("ledger_for_key_pin", ROLE_ROOT / "services" / "sparknet-ledger.py")
 
     ok, detail = ledger_module.verify_chain(ledger, signer.public_key_b64)
     assert ok, detail
@@ -1823,10 +1800,7 @@ def test_ledger_pin_allows_forward_key_rotation_but_not_rollback(tmp_path, authz
     )
 
     ledger = json.loads(ledger_path.read_text())
-    spec = importlib.util.spec_from_file_location("ledger_for_rotation", ROLE_ROOT / "services" / "sparknet-ledger.py")
-    ledger_module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(ledger_module)
+    ledger_module = load_by_path("ledger_for_rotation", ROLE_ROOT / "services" / "sparknet-ledger.py")
     ok, detail = ledger_module.verify_chain(ledger, new_public)
     assert ok, detail
 
@@ -1902,3 +1876,116 @@ def test_caller_allowlist_can_use_a_dedicated_signer_uid(signer_module):
     finally:
         left.close()
         right.close()
+
+
+# --- the operation catalog ----------------------------------------------------
+
+
+def _publication() -> dict:
+    """The signer derives the registry digest, so the input carries only the document."""
+    return {
+        "sequence": 1,
+        "published_at": CLOCK.isoformat(),
+        "registry": {"authorizations": []},
+    }
+
+
+def _share_evidence() -> dict:
+    return {
+        "event_type": "share-access",
+        "grant_id": "grant-1",
+        "node_pair": "a-b",
+        "share_type": "kb-view",
+        "content_sha256": "b" * 64,
+        "captured_at": CLOCK.isoformat(),
+    }
+
+
+def _trust_transition() -> dict:
+    return {
+        "schema_version": "1.0",
+        "node_id": "peer-1",
+        "level": "flagged",
+        "previous_level": "authenticated",
+        "reason": "review-needed",
+        "decided_at": CLOCK.isoformat(),
+        "reversible": True,
+        "flag_preserved": True,
+    }
+
+
+def _distillation_run() -> dict:
+    return {
+        "run_id": "run-1",
+        "dataset_id": "ds-1",
+        "teacher_model_id": "teacher",
+        "teacher_sha256": "a" * 64,
+        "student_base_model": "student",
+        "student_base_sha256": "b" * 64,
+        "hyperparameters": {"lr": 0.1},
+        "eval_metrics": {"score": 0.9},
+        "artifact_sha256": "c" * 64,
+        "decided_by": "master",
+        "decided_at": CLOCK.isoformat(),
+        "approved": True,
+    }
+
+
+def _valid_operation_requests() -> dict[str, dict]:
+    """One valid request body per catalog row, used by the table-driven test."""
+    return {
+        "sign-registry-entry": {"entry": _entry()},
+        "sign-registry-publication": {"publication": _publication()},
+        "sign-guard-approval": {"approval": _guard_approval()},
+        "sign-cluster-job": {"job": _job()},
+        "sign-admin-request": {"request": _admin_request()},
+        "sign-rfi-answer": {"answer": _rfi_answer()},
+        "sign-share-ratification": {"ratification": _share_ratification()},
+        "record-share-evidence": {"evidence": _share_evidence()},
+        "sign-trust-transition": {"transition": _trust_transition()},
+        "sign-distillation-run": {"run": _distillation_run()},
+    }
+
+
+def test_the_operation_catalog_is_the_published_operation_set(signer_module) -> None:
+    catalog = signer_module.SIGNER_OPERATIONS
+    assert tuple(catalog) == signer_module.SIGN_OPERATIONS
+    assert set(signer_module.OPERATIONS) == set(catalog) | set(signer_module.READ_OPERATIONS)
+    assert signer_module.describe()["signs"] == list(signer_module.SIGN_OPERATIONS)
+
+    for op, operation in catalog.items():
+        assert operation.name == op
+        assert operation.request_field
+        assert operation.request_phrase
+        assert operation.ledger_event
+        assert operation.response_key != ""  # None or a real key
+        assert callable(operation.prepare), f"{op} has no prepare function"
+
+
+def test_every_operation_has_one_valid_path_and_one_ledger_record(signer, signer_module) -> None:
+    requests = _valid_operation_requests()
+    assert set(requests) == set(signer_module.SIGNER_OPERATIONS)
+
+    for op in signer_module.SIGN_OPERATIONS:
+        operation = signer_module.SIGNER_OPERATIONS[op]
+        response = signer.handle({"op": op, "root_id": signer.root_id, **requests[op]})
+        assert response["ok"], f"{op}: {response.get('error')}"
+        assert "ledger_block" in response
+
+        if operation.response_key is not None:
+            assert operation.response_key in response, f"{op} lost response key {operation.response_key}"
+        else:
+            assert "content_sha256" in response, f"{op} lost its operation-specific response"
+
+        ledger = json.loads(signer.ledger_path.read_text())
+        last = ledger["blocks"][-1]["data"]
+        assert last["event"] == operation.ledger_event, f"{op} recorded the wrong ledger event"
+
+    assert signer.signed_count == len(signer_module.SIGN_OPERATIONS)
+
+
+def test_a_missing_request_object_is_named_by_the_catalog(signer, signer_module) -> None:
+    for op, operation in signer_module.SIGNER_OPERATIONS.items():
+        response = signer.handle({"op": op, "root_id": signer.root_id})
+        assert response["ok"] is False
+        assert f"requires {operation.request_phrase}" in response["error"]

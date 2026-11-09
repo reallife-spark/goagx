@@ -14,7 +14,6 @@ cannot be undone by serving yesterday's registry.
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
 import os
 import socket
@@ -28,6 +27,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -38,15 +38,7 @@ PUBLICATION_ROUTE = "/api/v1/registry"
 
 def _load_authz():
     """The one shared implementation, by path — the reason there is one."""
-    spec = importlib.util.spec_from_file_location("sparknet_authz_dist", FABRIC_ROOT / "shared" / "sparknet-authz.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(spec.name, None)
-    return module
+    return load_by_path("sparknet_authz_dist", FABRIC_ROOT / "shared" / "sparknet-authz.py")
 
 
 authz = _load_authz()
@@ -423,10 +415,10 @@ def test_tampered_content_is_refused_before_install(
 
 
 def test_registry_route_is_not_a_discovery_surface(running_guard: int) -> None:
-    """Push only: there is nothing to GET, and no other path to POST to."""
+    """Push only: GET on the route is a method mismatch, and no other path to POST to."""
     with pytest.raises(urllib.error.HTTPError) as raised:
         urllib.request.urlopen(f"http://127.0.0.1:{running_guard}{PUBLICATION_ROUTE}", timeout=5)
-    assert raised.value.code == 404
+    assert raised.value.code == 405
 
     status, _body = _post(running_guard, {"anything": True}, path="/api/v1/elsewhere")
     assert status == 404

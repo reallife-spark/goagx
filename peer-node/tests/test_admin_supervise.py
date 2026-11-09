@@ -20,10 +20,8 @@ from __future__ import annotations
 
 import base64
 import http.client
-import importlib.util
 import json
 import shutil
-import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +31,7 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from sparknet_loader import load_by_path
 
 VAULT_ROOT = Path(__file__).resolve().parent.parent
 SHARED_DIR = VAULT_ROOT.parent / "shared"
@@ -43,11 +42,7 @@ def _load(name: str, label: str):
     path = SHARED_DIR / f"{name}.py"
     if not path.is_file():
         pytest.skip(f"shared implementation not present at {path}")
-    spec = importlib.util.spec_from_file_location(label, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(label, path)
 
 
 authz = _load("sparknet-authz", "sparknet_authz_admin_test")
@@ -56,11 +51,7 @@ prov = _load("sparknet-provenance", "sparknet_provenance_admin_test")
 
 def _load_bridge():
     path = VAULT_ROOT / "services" / "sparknet-dispatch-bridge.py"
-    spec = importlib.util.spec_from_file_location("sparknet_dispatch_bridge_admint", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path("sparknet_dispatch_bridge_admint", path)
 
 
 bridge_mod = _load_bridge()
@@ -253,18 +244,16 @@ class Server:
 
     def __init__(self, ctx: dict):
         self.bridge = bridge_mod.Bridge(ctx["vault"], registry=ctx["registry_path"], clock=lambda: NOW)
-        self.server = ThreadingHTTPServer(
-            ("127.0.0.1", 0),
-            bridge_mod._make_handler(self.bridge, bridge_mod.STATES, bridge_mod._make_router(bridge_mod.STATES)),
+        self.listener = bridge_mod.build_listener(
+            self.bridge,
+            bridge_mod.STATES,
+            bind="127.0.0.1",
+            port=0,
+            public_keys={"test": object()},
+            clock=lambda: NOW,
         )
-        self.server.router = bridge_mod._make_router(bridge_mod.STATES)
-        self.server.public_key = None
-        self.server.clock = lambda: NOW
-        self.server.max_age_seconds = 3600
-        self.server.loopback_only_routes = ()
-        self.port = self.server.server_address[1]
-        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self._thread.start()
+        self.listener.start()
+        self.port = self.listener.servers[0].server_address[1]
 
     def post(self, path: str, body: dict, token: str | None = None) -> tuple[int, dict]:
         headers = {"Content-Type": "application/json"}
@@ -280,8 +269,7 @@ class Server:
             conn.close()
 
     def close(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
+        self.listener.stop()
 
 
 @pytest.fixture
@@ -582,18 +570,16 @@ def test_overlay_source_is_refused_on_local_routes_but_serves_admin(ctx):
         pytest.skip("no non-loopback IPv4 address to act as the overlay source")
 
     bridge = bridge_mod.Bridge(ctx["vault"], registry=ctx["registry_path"], clock=lambda: NOW)
-    handler = bridge_mod._make_handler(bridge, bridge_mod.STATES, bridge_mod._make_router(bridge_mod.STATES))
-    server = ThreadingHTTPServer(("0.0.0.0", 0), handler)
-    bridge_mod._configure_server(
-        server,
-        http=bridge_mod._load_http(),
-        signed_router=bridge_mod._make_router(bridge_mod.STATES),
-        public_key=None,
+    listener = bridge_mod.build_listener(
+        bridge,
+        bridge_mod.STATES,
+        bind="0.0.0.0",
+        port=0,
+        public_keys={"test": object()},
         clock=lambda: NOW,
     )
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
+    listener.start()
+    port = listener.servers[0].server_address[1]
 
     def _call(host: str, method: str, path: str, payload: dict | None = None):
         conn = http.client.HTTPConnection(host, port, timeout=5)
@@ -619,9 +605,7 @@ def test_overlay_source_is_refused_on_local_routes_but_serves_admin(ctx):
         _, payload = _call("127.0.0.1", "POST", "/admin/list_users", {})
         assert payload.get("reason") != "not-loopback", payload
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        listener.stop()
 
 
 # --- memory-supervise: signed, on-demand, never a mirror ---------------------

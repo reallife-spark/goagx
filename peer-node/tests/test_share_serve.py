@@ -9,7 +9,6 @@ second copy of the state machine.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import socket
 import sys
@@ -22,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sparknet_loader import load_by_path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE = ROOT / "services" / "sparknet-share-serve.py"
@@ -33,12 +33,7 @@ FAST = {"invite_acceptance": 30, "idle_close": 30, "ratification": 30, "share_ab
 def _load(name: str, path: Path) -> Any:
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 @pytest.fixture(scope="module")
@@ -113,22 +108,15 @@ class Wire:
             public_key=public_key,
             public_keys=public_keys,
         )
-        self.threads = [
-            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
-            for server in self.servers
-        ]
-        for thread in self.threads:
-            thread.start()
+        for listener in self.servers:
+            listener.start()
 
     def url(self, index: int = 0) -> str:
         return f"http://127.0.0.1:{self.ports[index]}"
 
     def close(self) -> None:
-        for server in self.servers:
-            server.shutdown()
-            server.server_close()
-        for thread in self.threads:
-            thread.join(timeout=3)
+        for listener in self.servers:
+            listener.stop()
 
 
 @pytest.fixture

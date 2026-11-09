@@ -18,7 +18,6 @@ hide a broken index. The service holds no key and cannot reach the signer.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import signal
@@ -27,6 +26,9 @@ import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -44,13 +46,7 @@ def _load(name: str, path: Path) -> Any:
         return sys.modules[name]
     if not path.is_file():
         raise FileNotFoundError(path)
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 def _shared_dir() -> Path:
@@ -248,9 +244,22 @@ def _load_keyring(values: list[str], authz: Any) -> dict[str, Any]:
 
 
 def _serve(http: Any, router: Any, *, bind: str, port: int, keyring: dict[str, Any]) -> None:
-    server = http.serve(router, bind=bind, port=port, public_keys=keyring, loopback_only_routes=("/admin",))
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
-    thread.start()
+    listener = http.listen(
+        [
+            http.Route(
+                "/",
+                lambda request: router(request.method, request.path, request.json or {}, request.identity),
+                auth="signed",
+                prefix=True,
+            )
+        ],
+        name="vector-serve",
+        bind=bind,
+        port=port,
+        public_keys=keyring,
+        loopback_only_routes=("/admin",),
+    )
+    listener.start()
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
@@ -259,9 +268,7 @@ def _serve(http: Any, router: Any, *, bind: str, port: int, keyring: dict[str, A
         while not stopping.wait(1.0):
             pass
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        listener.stop()
 
 
 def main(argv: list[str] | None = None) -> int:

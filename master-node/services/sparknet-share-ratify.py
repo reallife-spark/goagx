@@ -15,7 +15,6 @@ placeholder. A live listener on 4203 is a deployment leg (`DoD: confirm: user`).
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import signal
@@ -30,7 +29,7 @@ from typing import Any
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROLE_ROOT.parent / "shared"))
-from sparknet_loader import load_shared  # noqa: E402 - import after the loader path shim
+from sparknet_loader import load_by_path, load_shared  # noqa: E402 - import after the loader path shim
 
 DEFAULT_REGISTRY = ROLE_ROOT / "manifests" / "node-authorizations.json"
 DEFAULT_DEADLINE_SECONDS = 2 * 60 * 60
@@ -379,13 +378,7 @@ def _load_http() -> Any:
     path = _shared_dir() / "sparknet-http.py"
     if "sparknet_http_share_ratify" in sys.modules:
         return sys.modules["sparknet_http_share_ratify"]
-    spec = importlib.util.spec_from_file_location("sparknet_http_share_ratify", path)
-    if spec is None or spec.loader is None:
-        raise ShareRatifyError("missing-implementation", str(path))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["sparknet_http_share_ratify"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path("sparknet_http_share_ratify", path)
 
 
 def _default_state_path() -> Path:
@@ -464,9 +457,22 @@ def _ratify_router(service: ShareRatifier):
 
 def _serve(service: ShareRatifier, *, bind: str, port: int, keyring: dict[str, Any]) -> None:
     http = _load_http()
-    server = http.serve(_ratify_router(service), bind=bind, port=port, public_keys=keyring)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
-    thread.start()
+    router = _ratify_router(service)
+    listener = http.listen(
+        [
+            http.Route(
+                "/",
+                lambda request: router(request.method, request.path, request.json or {}, request.identity),
+                auth="signed",
+                prefix=True,
+            )
+        ],
+        name="share-ratify",
+        bind=bind,
+        port=port,
+        public_keys=keyring,
+    )
+    listener.start()
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
@@ -475,9 +481,7 @@ def _serve(service: ShareRatifier, *, bind: str, port: int, keyring: dict[str, A
         while not stopping.wait(1.0):
             pass
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        listener.stop()
 
 
 def _read_request(path: str) -> Any:

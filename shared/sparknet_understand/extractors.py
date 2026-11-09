@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sys
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import PurePosixPath
@@ -38,6 +39,9 @@ from .core import (
     symbol_id,
 )
 
+sys.path.insert(0, str(REPO_ROOT / "shared"))
+from sparknet_loader import load_shared
+
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -45,16 +49,14 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 @lru_cache(maxsize=1)
 def _yaml_parse() -> Any:
-    """Load the fabric's YAML subset by path; no third-party YAML dependency."""
-    import importlib.util
-
-    path = REPO_ROOT / "shared" / "sparknet-yaml.py"
-    spec = importlib.util.spec_from_file_location("sparknet_yaml_for_understand", path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, "parse_yaml_subset", None)
+    """Load the fabric's YAML subset through the one loader; no third-party YAML dependency."""
+    module = load_shared(
+        "sparknet-yaml.py",
+        "sparknet_yaml_for_understand",
+        dirs=[REPO_ROOT / "shared"],
+        missing_ok=True,
+    )
+    return getattr(module, "parse_yaml_subset", None) if module is not None else None
 
 
 def _parse_yaml(text: str) -> dict[str, Any]:

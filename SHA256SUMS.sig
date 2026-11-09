@@ -1,7 +1,7 @@
 {
   "file": "SHA256SUMS",
-  "public_key_b64": "eSx5rL19OuUcbFPKBfywwB6DrSA96+cBsQeus9jOjls=",
+  "public_key_b64": "xcwj8LQNNPN77cO95HP4Wzb4Nq0GuFuTPrLgDQ2COS4=",
   "schema": "sparknet-artifact-signature/1",
-  "sha256": "1fd44cdd0cd91355d3b0ad29933b0669f15a606c2330f0e88f7f90c227af9b5b",
-  "signature_b64": "QhRbxAL3k4bcTF59ek9Thone0+yiNB38DG6/AyIbOdu+5oiYi5V++TbJ7EYEP+JmmUkOAZEc4sRwkvrJASvaBg=="
+  "sha256": "f963aadc375ac40b606e9fa842249d0437d1ffd6e71d697bb982460dd60c2f26",
+  "signature_b64": "fBMr+Xj84VMNVu7VSb78a8wHp9FpEoXHH1F+DZ/Wq9ER3WGx/UlMbgFOemZF/eZ30Cf7xBEcWXDaSjHjXsIcCw=="
 }

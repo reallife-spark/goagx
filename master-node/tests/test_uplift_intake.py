@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from sparknet_loader import load_by_path
 
 ROLE_ROOT = Path(__file__).resolve().parent.parent
 FABRIC_ROOT = ROLE_ROOT.parent
@@ -20,12 +19,7 @@ NOW = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
 def _load(name: str, path: Path):
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_by_path(name, path)
 
 
 @pytest.fixture(scope="module")
@@ -100,10 +94,9 @@ def _serve(service, tmp_path: Path, authz, *, capabilities=None):
     keys = {"peer-1": authz.load_public_key(pub_path)}
     intake = service.Intake(state=tmp_path / "uplift", registry=registry, keys=keys)
     port = _free_port()
-    server = service.serve(intake, bind="127.0.0.1", port=port)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
-    thread.start()
-    return server, thread, port, state
+    listener = service.serve(intake, bind="127.0.0.1", port=port)
+    listener.start()
+    return listener, None, port, state
 
 
 def _client_env(pusher, monkeypatch, state: Path, port: int):
@@ -115,7 +108,7 @@ def _client_env(pusher, monkeypatch, state: Path, port: int):
 
 
 def test_inventory_and_snapshot_round_trip(service, authz, pusher, tmp_path, monkeypatch):
-    server, thread, port, state = _serve(service, tmp_path, authz)
+    listener, _thread, port, state = _serve(service, tmp_path, authz)
     try:
         _client_env(pusher, monkeypatch, state, port)
         records = [
@@ -142,13 +135,11 @@ def test_inventory_and_snapshot_round_trip(service, authz, pusher, tmp_path, mon
         files = list((tmp_path / "uplift" / "snapshots" / "peer-1" / "sparknet-peer").glob("*.snapshot"))
         assert files and files[0].read_bytes() == snapshot
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
+        listener.stop()
 
 
 def test_a_tampered_snapshot_manifest_is_refused(service, authz, pusher, tmp_path, monkeypatch):
-    server, thread, port, state = _serve(service, tmp_path, authz)
+    listener, _thread, port, state = _serve(service, tmp_path, authz)
     try:
         _client_env(pusher, monkeypatch, state, port)
         body = b"snapshot-bytes"
@@ -156,19 +147,15 @@ def test_a_tampered_snapshot_manifest_is_refused(service, authz, pusher, tmp_pat
         assert pusher.send("snapshot", body, manifest, endpoint=f"http://127.0.0.1:{port}") is False
         assert not list((tmp_path / "uplift" / "snapshots").rglob("*.snapshot"))
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
+        listener.stop()
 
 
 def test_a_peer_without_model_uplift_is_refused(service, authz, pusher, tmp_path, monkeypatch):
-    server, thread, port, state = _serve(service, tmp_path, authz, capabilities=[])
+    listener, _thread, port, state = _serve(service, tmp_path, authz, capabilities=[])
     try:
         _client_env(pusher, monkeypatch, state, port)
         body = json.dumps({"inventory": []}).encode()
         assert pusher.send("inventory", body, {"rows": 0}, endpoint=f"http://127.0.0.1:{port}") is False
         assert not (tmp_path / "uplift" / "inventory" / "peer-1.jsonl").exists()
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
+        listener.stop()
