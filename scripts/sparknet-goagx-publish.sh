@@ -523,7 +523,8 @@ PY
     LC_ALL=C sed -i -E "s/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z/<published>/g" "$tree/README.md"
     write_sums "$tree"
   done
-  if diff -r --exclude=.git "$remote_work/goagx" "$stage" >"$remote_work/diff.txt" 2>&1; then
+  if diff -r --exclude=.git --exclude=RELEASE_PUBKEY --exclude=SHA256SUMS.sig --exclude=SHA256SUMS \
+      "$remote_work/goagx" "$stage" >"$remote_work/diff.txt" 2>&1; then
     rm -rf "$stage" "$remote_work"
     log "no drift: the published repo matches this tree"
     return 0

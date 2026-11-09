@@ -1,7 +1,7 @@
 {
-  "file": "tmp.KHFwazm02B",
+  "file": "tmp.2zrrMrehLf",
   "public_key_b64": "eSx5rL19OuUcbFPKBfywwB6DrSA96+cBsQeus9jOjls=",
   "schema": "sparknet-artifact-signature/1",
-  "sha256": "af2d038b1f018ec601cf78140115c923922875a1d09297b92339d74c56053d53",
-  "signature_b64": "JKzqryQiEdnbwGHeTR8EvGSNmoLXS2rcaSxk8HObB1mm6JdzHKAQvmHhmGJiQ47m9GvO0/LPKBvqej4xM0U8CQ=="
+  "sha256": "d5936edbf19f33b063861a060845249fc6fd517ee2fd70a13e28418919e99e95",
+  "signature_b64": "wAVu3v3OR/YGD5q7hm4+3GS3Z0WIBUhieG+Wb18/v22U+FjJBTbVNUvgujq/31tdTVFuPE6D8881hA25coofDQ=="
 }
