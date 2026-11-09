@@ -775,6 +775,130 @@ def api_learning(config: dict[str, Any], role_root: Path) -> tuple[int, dict[str
     }
 
 
+UNDERSTAND_MAX_BYTES = 20_000_000
+
+
+def _understand_candidates(config: dict[str, Any], role_root: Path) -> list[Path]:
+    configured = (config.get("paths") or {}).get("understand")
+    candidates: list[Path] = []
+    if configured:
+        resolved = resolve(role_root, configured)
+        if resolved:
+            candidates.append(resolved)
+    for base in (role_root, role_root.parent):
+        candidates.append(base / ".understand-anything" / "knowledge-graph.json")
+        candidates.append(base / ".ua" / "knowledge-graph.json")
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            unique.append(candidate)
+            seen.add(candidate)
+    return unique
+
+
+def api_issues(config: dict[str, Any], role_root: Path) -> tuple[int, dict[str, Any]]:
+    """Read the Master's recorded peer work items. Master-only, read-only."""
+    if config.get("role") != "master":
+        return 403, {"ok": False, "error": "Issues are Master-only"}
+    configured = (config.get("paths") or {}).get("issues")
+    path = resolve(role_root, configured) if configured else Path("/mnt/log/sparknet-issues.jsonl")
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    if path and path.is_file():
+        text = read_text(path, limit=4_000_000) or ""
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            key = (str(row.get("node_id") or ""), str(row.get("issue_id") or ""))
+            if not all(key):
+                continue
+            current = rows.get(key)
+            if current is None or str(row.get("updated_at") or "") >= str(current.get("updated_at") or ""):
+                rows[key] = row
+    triage_path = role_root / ".state" / "issues" / "triage.json"
+    triage = read_json(triage_path)
+    if not isinstance(triage, dict):
+        triage = {}
+    issues = []
+    for row in sorted(
+        rows.values(), key=lambda item: (str(item.get("node_id") or ""), str(item.get("issue_id") or ""))
+    ):
+        key = f"{row.get('node_id')}:{row.get('issue_id')}"
+        item = dict(row)
+        item["body"] = str(item.get("body") or "")[:4000]
+        item["triage"] = triage.get(key, {}) if isinstance(triage.get(key), dict) else {}
+        issues.append(item)
+    counts = {
+        "total": len(issues),
+        "open": sum(1 for item in issues if item.get("status") not in {"done", "wontfix"}),
+        "needs_triage": sum(1 for item in issues if "needs-triage" in (item.get("labels") or [])),
+        "ready_for_agent": sum(1 for item in issues if "ready-for-agent" in (item.get("labels") or [])),
+    }
+    return 200, {
+        "ok": True,
+        "store": str(path) if path else "",
+        "issues": issues,
+        "counts": counts,
+        "read_only": True,
+        "note": "Operational work items, not knowledge and not authority.",
+    }
+
+
+def api_understand(config: dict[str, Any], role_root: Path, *, summary: bool = False) -> tuple[int, dict[str, Any]]:
+    """Read the derived graph from the role or fabric root.
+
+    The graph is a build artifact, not knowledge and not authority. The route
+    is read-only, capped and path-controlled by the console config; it never
+    accepts a caller-supplied path.
+    """
+    candidates = _understand_candidates(config, role_root)
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > UNDERSTAND_MAX_BYTES:
+                return 413, {"ok": False, "error": "graph is larger than the read cap", "path": str(path)}
+            graph = read_json(path)
+        except OSError as exc:
+            return 422, {"ok": False, "error": f"cannot read graph: {exc}", "path": str(path)}
+        if graph is None:
+            return 422, {"ok": False, "error": "cannot read graph", "path": str(path)}
+        if (
+            not isinstance(graph, dict)
+            or not isinstance(graph.get("nodes"), list)
+            or not isinstance(graph.get("edges"), list)
+        ):
+            return 422, {"ok": False, "error": "graph has no nodes/edges arrays", "path": str(path)}
+        try:
+            label = path.relative_to(role_root).as_posix()
+        except ValueError:
+            label = str(path)
+        if summary:
+            return 200, {
+                "ok": True,
+                "available": True,
+                "path": label,
+                "project": graph.get("project"),
+                "counts": {
+                    "nodes": len(graph["nodes"]),
+                    "edges": len(graph["edges"]),
+                    "layers": len(graph.get("layers") or []),
+                    "tour": len(graph.get("tour") or []),
+                },
+            }
+        return 200, {"ok": True, "available": True, "path": label, "graph": graph}
+    return 200, {
+        "ok": True,
+        "available": False,
+        "path": str(candidates[0]) if candidates else "",
+        "error": "no graph found; run /understand to build it",
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "sparknet-console/1"
     config: dict[str, Any]
@@ -849,7 +973,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 self._json(401, {"ok": False, "error": "console token required"})
                 return
-            if path in {"/api/mesh", "/api/qdrant", "/api/map", "/api/projects"} and self._auth_role not in {
+            if path in {
+                "/api/mesh",
+                "/api/qdrant",
+                "/api/map",
+                "/api/projects",
+                "/api/issues",
+            } and self._auth_role not in {
                 "admin",
                 "owner",
             }:
@@ -868,6 +998,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(status, payload)
             elif path == "/api/learning":
                 status, payload = api_learning(self.config, self.role_root)
+                self._json(status, payload)
+            elif path == "/api/understand":
+                params = urllib.parse.parse_qs(parsed.query)
+                status, payload = api_understand(
+                    self.config,
+                    self.role_root,
+                    summary=(params.get("summary") or [""])[0] == "1",
+                )
+                self._json(status, payload)
+            elif path == "/api/issues":
+                status, payload = api_issues(self.config, self.role_root)
                 self._json(status, payload)
             elif path == "/api/memory":
                 self._json(200, api_memory(self.config, self.role_root))
@@ -904,7 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(404, {"ok": False, "error": "unknown API path"})
             return
-        if path in ("", "/", "/mesh", "/vectors", "/learning", "/memory", "/projects"):
+        if path in ("", "/", "/mesh", "/vectors", "/learning", "/memory", "/projects", "/understand"):
             target = self.static_dir / "index.html"
         else:
             target = (self.static_dir / path.lstrip("/")).resolve()

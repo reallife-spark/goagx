@@ -71,6 +71,7 @@ KNOWN_CAPABILITIES = frozenset(
         "cross-department-share",
         "model-uplift",
         "memory-supervise",
+        "issue-report",
     }
 )
 
@@ -1919,6 +1920,183 @@ REASON_TELEMETRY_WRONG_PEER = "wrong_peer"
 REASON_TELEMETRY_EXPIRED = "expired"
 REASON_TELEMETRY_NOT_YET_VALID = "not_yet_valid"
 REASON_TELEMETRY_REPLAYED = "replayed_nonce"
+
+
+# --- issue reports (peer -> Master work items, signed) -------------------------
+#
+# An issue is operational work, never knowledge and never authority. The report is
+# signed with the peer node key and attributed to a registered, non-revoked overlay
+# source; the Master requires the peer-held `issue-report` capability, records the
+# item and triages it. It is never installed into a vault and never served by 4223.
+
+ISSUE_SCHEMA = "sparknet-issue/1"
+ISSUE_STATUSES = frozenset({"open", "triaged", "in-progress", "blocked", "done", "wontfix"})
+ISSUE_LABELS = frozenset({"needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"})
+ISSUE_MAX_TITLE = 200
+ISSUE_MAX_BODY = 65_536
+ISSUE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
+
+ISSUE_REPORT_FIELDS = (
+    "schema",
+    "issue_id",
+    "node_id",
+    "peer_fingerprint",
+    "title",
+    "body",
+    "status",
+    "labels",
+    "links",
+    "source",
+    "content_sha256",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "updated_at",
+)
+
+ISSUE_REPORT_REQUIRED = (
+    "schema",
+    "issue_id",
+    "node_id",
+    "peer_fingerprint",
+    "title",
+    "body",
+    "status",
+    "content_sha256",
+    "nonce",
+    "issued_at",
+    "expires_at",
+    "updated_at",
+)
+
+REASON_ISSUE_MALFORMED = "malformed"
+REASON_ISSUE_WRONG_PEER = "wrong_peer"
+REASON_ISSUE_DIGEST_MISMATCH = "digest_mismatch"
+REASON_ISSUE_EXPIRED = "expired"
+REASON_ISSUE_NOT_YET_VALID = "not_yet_valid"
+REASON_ISSUE_REPLAYED = "replayed_nonce"
+
+
+def build_issue_report(
+    *,
+    issue_id: str,
+    node_id: str,
+    peer_fingerprint: str,
+    title: str,
+    body: str,
+    status: str = "open",
+    labels: list[str] | tuple[str, ...] = (),
+    links: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    source: str = "",
+    updated_at: str | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = 300,
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    """Build one signed issue-report body; never signs it (the transport does)."""
+    if not ISSUE_ID_RE.fullmatch(str(issue_id or "")):
+        raise AuthzError("issue_id must be a lowercase slug of 3..80 characters")
+    if not str(node_id or ""):
+        raise AuthzError("node_id is required")
+    if not str(peer_fingerprint or ""):
+        raise AuthzError("peer_fingerprint is required")
+    if not isinstance(title, str) or not title.strip() or len(title) > ISSUE_MAX_TITLE:
+        raise AuthzError(f"title must be a non-empty string of at most {ISSUE_MAX_TITLE} characters")
+    if not isinstance(body, str) or len(body.encode("utf-8")) > ISSUE_MAX_BODY:
+        raise AuthzError(f"body must be a string of at most {ISSUE_MAX_BODY} bytes")
+    if status not in ISSUE_STATUSES:
+        raise AuthzError(f"status must be one of {sorted(ISSUE_STATUSES)}, got {status!r}")
+    unknown = sorted(set(labels) - ISSUE_LABELS)
+    if unknown:
+        raise AuthzError(f"labels outside the closed vocabulary: {unknown}")
+    if not isinstance(links, (list, tuple)) or any(not isinstance(item, dict) for item in links):
+        raise AuthzError("links must be an array of objects")
+    if not isinstance(source, str) or len(source) > 500:
+        raise AuthzError("source must be a string of at most 500 characters")
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    stamp = moment.isoformat().replace("+00:00", "Z")
+    return {
+        "schema": ISSUE_SCHEMA,
+        "issue_id": str(issue_id),
+        "node_id": str(node_id),
+        "peer_fingerprint": str(peer_fingerprint),
+        "title": str(title),
+        "body": body,
+        "status": str(status),
+        "labels": sorted({str(label) for label in labels}),
+        "links": list(links),
+        "source": source,
+        "content_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "nonce": nonce or secrets.token_hex(16),
+        "issued_at": stamp,
+        "expires_at": (moment + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z"),
+        "updated_at": updated_at or stamp,
+    }
+
+
+def verify_issue_report(
+    report: Any,
+    *,
+    expected_fingerprint: str,
+    now: datetime | None = None,
+    seen_nonces: Any = (),
+    max_skew_seconds: int = 300,
+) -> tuple[bool, str]:
+    """Validate one issue report; never raises. Signature is the transport's job."""
+    if not isinstance(report, dict) or set(report) != set(ISSUE_REPORT_FIELDS):
+        return False, REASON_ISSUE_MALFORMED
+    for field_name in ISSUE_REPORT_REQUIRED:
+        value = report.get(field_name)
+        if not isinstance(value, str) or not value:
+            return False, REASON_ISSUE_MALFORMED
+    if report["schema"] != ISSUE_SCHEMA or not ISSUE_ID_RE.fullmatch(report["issue_id"]):
+        return False, REASON_ISSUE_MALFORMED
+    if len(report["title"]) > ISSUE_MAX_TITLE:
+        return False, REASON_ISSUE_MALFORMED
+    if len(report["body"].encode("utf-8")) > ISSUE_MAX_BODY:
+        return False, REASON_ISSUE_MALFORMED
+    if report["status"] not in ISSUE_STATUSES:
+        return False, REASON_ISSUE_MALFORMED
+    labels = report["labels"]
+    if (
+        not isinstance(labels, list)
+        or any(not isinstance(label, str) for label in labels)
+        or set(labels) - ISSUE_LABELS
+    ):
+        return False, REASON_ISSUE_MALFORMED
+    links = report["links"]
+    if not isinstance(links, list) or any(not isinstance(item, dict) for item in links):
+        return False, REASON_ISSUE_MALFORMED
+    if not isinstance(report["source"], str) or len(report["source"]) > 500:
+        return False, REASON_ISSUE_MALFORMED
+    if hashlib.sha256(report["body"].encode("utf-8")).hexdigest() != report["content_sha256"]:
+        return False, REASON_ISSUE_DIGEST_MISMATCH
+    if report["peer_fingerprint"] != expected_fingerprint:
+        return False, REASON_ISSUE_WRONG_PEER
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    try:
+        issued = datetime.fromisoformat(report["issued_at"].replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(report["expires_at"].replace("Z", "+00:00"))
+        updated = datetime.fromisoformat(report["updated_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return False, REASON_ISSUE_MALFORMED
+    if issued.tzinfo is None:
+        issued = issued.replace(tzinfo=timezone.utc)
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    if expires <= moment:
+        return False, REASON_ISSUE_EXPIRED
+    if (issued - moment).total_seconds() > max_skew_seconds:
+        return False, REASON_ISSUE_NOT_YET_VALID
+    if report["nonce"] in set(seen_nonces or ()):
+        return False, REASON_ISSUE_REPLAYED
+    return True, ""
 
 
 def build_telemetry_report(
