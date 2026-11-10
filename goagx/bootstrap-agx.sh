@@ -176,7 +176,7 @@ build_gospark() {
   make -C "$GOSPARK_DIR" build build-gpu \
     || die "goSpark build failed in $GOSPARK_DIR"
   local b
-  for b in sparknet-agent sparknet-control sparknet-gpu sparknetctl; do
+  for b in sparknet-agent sparknet-control sparknet-gpu sparknetctl sparknet-understand; do
     [ -x "$GOSPARK_DIR/bin/$b" ] \
       || die "missing $GOSPARK_DIR/bin/$b after the build — see goSpark's Makefile"
   done
