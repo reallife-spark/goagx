@@ -10,4 +10,4 @@
 # Repo visibility is private; the device needs a fine-grained PAT or a
 # deploy key with read access to reallife-spark/gospark.
 GOSPARK_REPO=https://github.com/reallife-spark/gospark.git
-GOSPARK_SHA=970d714ee0c5dcc0641746de6d60195b28d060a3
+GOSPARK_SHA=cd2d72ae6be0f54c643f0d75124ce5c25f2098ab

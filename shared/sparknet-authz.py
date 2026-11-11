@@ -39,7 +39,7 @@ import json
 import re
 import secrets
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,6 +69,7 @@ KNOWN_CAPABILITIES = frozenset(
         "cluster-dispatch",
         "cluster-serve",
         "admin-supervise",
+        "sandbox-supervise",
         "cross-department-share",
         "model-uplift",
         "memory-supervise",
@@ -455,6 +456,132 @@ def _parse_ts(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+ENTRY_CLOCK_SKEW_SECONDS = 300
+
+
+class RegistryEntryError(AuthzError):
+    """A registry entry the fabric will not use, with a stable reason code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class AcceptedEntry:
+    """A verified registry entry, narrowed to the facts a caller may use."""
+
+    fingerprint: str
+    identity: dict[str, Any]
+    capabilities: list[str]
+    overlay_ipv4: str | None
+    entry: dict[str, Any]
+
+
+def accept_entry(
+    entry: Any,
+    master_key: Ed25519PublicKey,
+    *,
+    now: datetime | None = None,
+    required_capability: str | None = None,
+    expected_fingerprint: str | None = None,
+    mode: str = "strict",
+    clock_skew_seconds: int = ENTRY_CLOCK_SKEW_SECONDS,
+) -> AcceptedEntry | None:
+    """Verify one registry entry and return the facts a caller may rely on.
+
+    This is the one acceptance rule for an entry that is not necessarily the
+    local node. ``evaluate`` uses it for the local identity; the Master's
+    intake, scheduler, RFI responder and uplift intake use it for a remote
+    entry; the peer's liveness roster uses the tolerant mode.
+
+    ``mode="roster"`` returns ``None`` instead of raising, for a caller that is
+    listing peers rather than granting authority. It still applies every check;
+    it just treats a bad entry as "not a peer" rather than a refusal.
+    """
+    try:
+        return _accept_entry(
+            entry,
+            master_key,
+            now=now,
+            required_capability=required_capability,
+            expected_fingerprint=expected_fingerprint,
+            clock_skew_seconds=clock_skew_seconds,
+        )
+    except RegistryEntryError:
+        if mode == "roster":
+            return None
+        raise
+
+
+def _accept_entry(
+    entry: Any,
+    master_key: Ed25519PublicKey,
+    *,
+    now: datetime | None,
+    required_capability: str | None,
+    expected_fingerprint: str | None,
+    clock_skew_seconds: int,
+) -> AcceptedEntry:
+    if not isinstance(entry, Mapping):
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry must be an object")
+    fingerprint_value = entry.get("fingerprint")
+    if not isinstance(fingerprint_value, str) or len(fingerprint_value) != 64:
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry has no usable fingerprint")
+    if expected_fingerprint is not None and fingerprint_value != expected_fingerprint:
+        raise RegistryEntryError(REASON_IDENTITY_MISMATCH, "registry entry names a different node")
+    if entry.get("revoked"):
+        raise RegistryEntryError(REASON_REVOKED, "registry entry is revoked")
+    moment = now or datetime.now(timezone.utc)
+    expires = _parse_ts(entry.get("expires_at"))
+    if expires is None:
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry has no usable expires_at")
+    if moment > expires:
+        raise RegistryEntryError(REASON_EXPIRED, "registry entry has expired")
+    issued = _parse_ts(entry.get("issued_at"))
+    if issued is None:
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry has no usable issued_at")
+    if moment < issued - timedelta(seconds=clock_skew_seconds):
+        raise RegistryEntryError(REASON_NOT_YET_VALID, "registry entry is not valid yet")
+
+    identity_value = entry.get("identity")
+    if not isinstance(identity_value, Mapping):
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry has no identity object")
+    identity = dict(identity_value)
+    try:
+        actual_fingerprint = fingerprint(identity)
+    except AuthzError as exc:
+        raise RegistryEntryError(REASON_MALFORMED, f"identity is not canonical: {exc}") from exc
+    if actual_fingerprint != fingerprint_value:
+        raise RegistryEntryError(REASON_IDENTITY_MISMATCH, "identity does not hash to the entry fingerprint")
+
+    if not verify_signature(
+        master_key,
+        str(entry.get("signature_b64") or ""),
+        authorization_message(dict(entry)),
+    ):
+        raise RegistryEntryError(REASON_BAD_SIGNATURE, "registry entry signature does not verify")
+
+    capabilities = entry.get("capabilities")
+    if not isinstance(capabilities, list) or not capabilities:
+        raise RegistryEntryError(REASON_MALFORMED, "registry entry has no capabilities")
+    unknown = [capability for capability in capabilities if capability not in KNOWN_CAPABILITIES]
+    if unknown:
+        raise RegistryEntryError(REASON_UNKNOWN_CAPABILITY, f"registry entry has unknown capabilities: {unknown}")
+    if required_capability is not None and required_capability not in capabilities:
+        raise RegistryEntryError("capability_missing", f"registry entry does not carry {required_capability}")
+
+    overlay = entry.get("overlay_ipv4") or identity.get("overlay_ipv4")
+    return AcceptedEntry(
+        fingerprint=fingerprint_value,
+        identity=identity,
+        capabilities=sorted(str(capability) for capability in capabilities),
+        overlay_ipv4=str(overlay) if overlay else None,
+        entry=dict(entry),
+    )
+
+
 def evaluate(
     identity: dict[str, Any],
     registry: dict[str, Any],
@@ -480,48 +607,23 @@ def evaluate(
     if entry is None:
         return Decision(False, REASON_UNKNOWN, local_fp)
 
-    if entry.get("revoked"):
-        return Decision(False, REASON_REVOKED, local_fp)
-
-    expires = _parse_ts(entry.get("expires_at"))
-    if expires is None:
-        return Decision(False, REASON_MALFORMED, local_fp)
-    if now > expires:
-        return Decision(False, REASON_EXPIRED, local_fp)
-    issued = _parse_ts(entry.get("issued_at"))
-    if issued is None:
-        return Decision(False, REASON_MALFORMED, local_fp)
-    if now < issued - timedelta(minutes=5):
-        return Decision(False, REASON_NOT_YET_VALID, local_fp)
-
-    # The registry must not be able to carry an identity that hashes to
-    # something other than the fingerprint it is filed under.
-    stored_identity = entry.get("identity")
-    if not isinstance(stored_identity, dict):
-        return Decision(False, REASON_MALFORMED, local_fp)
     try:
-        if fingerprint(stored_identity) != local_fp:
-            return Decision(False, REASON_IDENTITY_MISMATCH, local_fp)
-    except AuthzError:
-        return Decision(False, REASON_MALFORMED, local_fp)
-
-    if not verify_signature(master_public_key, str(entry.get("signature_b64", "")), authorization_message(entry)):
-        return Decision(False, REASON_BAD_SIGNATURE, local_fp)
-
-    granted = entry.get("capabilities")
-    if not isinstance(granted, list) or not granted:
-        return Decision(False, REASON_MALFORMED, local_fp)
-    unknown = [c for c in granted if c not in KNOWN_CAPABILITIES]
-    if unknown:
-        return Decision(False, REASON_UNKNOWN_CAPABILITY, local_fp)
+        accepted = accept_entry(
+            entry,
+            master_public_key,
+            now=now,
+            expected_fingerprint=local_fp,
+        )
+    except RegistryEntryError as exc:
+        return Decision(False, exc.code, local_fp)
 
     return Decision(
         True,
         REASON_OK,
         local_fp,
-        capabilities=sorted(granted),
-        overlay_ipv4=entry.get("overlay_ipv4") or stored_identity.get("overlay_ipv4"),
-        identity=stored_identity,
+        capabilities=accepted.capabilities,
+        overlay_ipv4=accepted.overlay_ipv4,
+        identity=accepted.identity,
     )
 
 
@@ -987,6 +1089,86 @@ def _build_admin_request(request: dict[str, Any]) -> dict[str, Any]:
             f"unknown admin action {request['action']!r}; expected one of {', '.join(ADMIN_REQUEST_ACTIONS)}"
         )
     projected = {field: request.get(field) for field in sorted(ADMIN_REQUEST_FIELDS)}
+    return projected
+
+
+# --- sandbox requests (sandbox-supervise) ------------------------------------
+
+
+#: The closed set of execution-sandbox actions a Master may ask a peer to
+#: perform against the peer's own OpenShell gateway. The peer still applies its
+#: own local execution whitelist before any gateway call; a request naming an
+#: action outside this list is refused rather than guessed at, exactly like
+#: CLUSTER_JOB_MODES and ADMIN_REQUEST_ACTIONS.
+SANDBOX_REQUEST_ACTIONS = (
+    "list",
+    "get",
+    "create",
+    "start",
+    "stop",
+    "delete",
+    "policy-get",
+    "policy-update",
+    "expose",
+)
+
+#: Fields of a sandbox-request covered by the Master's signature. `policy`,
+#: `mounts`, `image` and `service_name` are inside the projection because a
+#: signature over a sandbox name alone would let anyone replay one request's
+#: signature with a wider mount set or a different image. The peer executes only
+#: the signed projection; an unsigned field is refused.
+SANDBOX_REQUEST_FIELDS = (
+    "request_id",
+    "conversation_id",
+    "master_node_id",
+    "target_node_id",
+    "target_fingerprint",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "action",
+    "sandbox_name",
+    "image",
+    "policy",
+    "mounts",
+    "service_name",
+    "port",
+    "reason",
+)
+
+#: Fields a request must carry and fill before it can be canonicalised. The
+#: remaining fields are action-dependent and are projected as null/empty; the
+#: peer's execution whitelist enforces which action needs which field.
+SANDBOX_REQUEST_REQUIRED = (
+    "request_id",
+    "master_node_id",
+    "target_node_id",
+    "target_fingerprint",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "action",
+)
+
+
+def _build_sandbox_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Canonical bytes signed for a sandbox-request, projected to SANDBOX_REQUEST_FIELDS.
+
+    One projection rule, shared by the signer and every peer that executes the
+    request — the same anti-drift pattern as ``admin_request_message`` and
+    ``cluster_job_message``: a second copy of this rule is exactly how signing
+    and verifying diverge.
+    """
+    if not isinstance(request, dict):
+        raise AuthzError("sandbox request must be an object")
+    missing = [f for f in SANDBOX_REQUEST_REQUIRED if not request.get(f)]
+    if missing:
+        raise AuthzError(f"sandbox request missing required field(s): {', '.join(missing)}")
+    if request["action"] not in SANDBOX_REQUEST_ACTIONS:
+        raise AuthzError(
+            f"unknown sandbox action {request['action']!r}; expected one of {', '.join(SANDBOX_REQUEST_ACTIONS)}"
+        )
+    projected = {field: request.get(field) for field in sorted(SANDBOX_REQUEST_FIELDS)}
     return projected
 
 
@@ -2287,6 +2469,12 @@ SPECS: dict[str, EnvelopeSpec] = {
         signed_fields=ADMIN_REQUEST_FIELDS,
         project=_build_admin_request,
     ),
+    "sandbox-request": EnvelopeSpec(
+        fields=SANDBOX_REQUEST_FIELDS,
+        required=SANDBOX_REQUEST_REQUIRED,
+        signed_fields=SANDBOX_REQUEST_FIELDS,
+        project=_build_sandbox_request,
+    ),
     "distillation-run": EnvelopeSpec(
         fields=DISTILLATION_RUN_FIELDS,
         required=DISTILLATION_RUN_REQUIRED,
@@ -2370,6 +2558,10 @@ def cluster_job_message(job: dict[str, Any]) -> bytes:
 
 def admin_request_message(request: dict[str, Any]) -> bytes:
     return envelope_message("admin-request", request)
+
+
+def sandbox_request_message(request: dict[str, Any]) -> bytes:
+    return envelope_message("sandbox-request", request)
 
 
 def distillation_run_message(run: dict[str, Any]) -> bytes:
