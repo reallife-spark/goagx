@@ -68,7 +68,7 @@ x-agx-node: &agx-node
       # not a COPY, so the goSpark source never enters this build context.
       gospark: ${GOSPARK_DIR:-../gospark}
     args:
-      L4T_BASE: ${L4T_BASE:-nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3}
+      L4T_BASE: ${L4T_BASE:-nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472}
       OPENCODE_VERSION: ${OPENCODE_VERSION:-2.2.5}
       NATS_VERSION: ${NATS_VERSION:-2.14.2}
       # The build escape hatches: point the engine at a fork's fixes without
