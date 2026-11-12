@@ -48,7 +48,7 @@
 # r35.1.0-pth1.11/1.12/1.13 and r35.2.1-pth2.0 (there is no r35.3/r35.4/
 # r35.6 tag): torch 2.0.0, cu114, Python 3.8. Everything below is pinned to
 # what that base provides.
-ARG L4T_BASE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+ARG L4T_BASE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472
 
 # --- pins --------------------------------------------------------------------
 # Pinned, never `latest`: a mutating tag defeats the point of a node image.
