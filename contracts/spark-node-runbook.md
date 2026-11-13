@@ -224,10 +224,16 @@ surface: `sparknet-agx-node:dev` (goSpark, compute, aux engines, bundle,
 stub) and `sparknet-llm:agx` (the text engine). What genuinely differs, all
 documented in `goagx/README.md`:
 
-- **role-specific GGUF on the root model dir** — teacher Qwen3.6-35B Q4_K_M
-  on `agx64` (64 GB), student Qwen3.6-0.6B Q8_0 on `agx32` (32 GB);
+- **role-specific GGUF on the root model dir** — teacher Qwen3.6-35B-A3B
+  Q4_K_M on `agx64` (64 GB), student Qwen3.6-27B Q4_K_M on `agx32` (32 GB);
   `VLLM_MAX_MODEL_LEN=8192` default, each overridable; the compose mounts
   `/opt/sparknet/models` read-only and never mounts a vault or the state dir;
+- **two same-version sets** — `qwen3.6` (35B-A3B + 27B) and `qwen3`
+  (32B + 0.6B); `scripts/sparknet-model-set.py` selects the active file and
+  precontext mode, and both fit on root during the bake-off;
+  the 2026-11-13 bake-off chose `qwen3.6` (teacher 18.54/18.08 tok/s,
+  student 4.41/4.54 tok/s, quality 1.0); the Qwen3 set is cold and can be
+  re-staged with `scripts/sparknet-model-stage.py`;
 - **the text engine is `sparknet-llm:agx`** — `llama-server` from dusty-nv's
   `jetson-containers` `llama_cpp` package (L4T r35 / `sm_72`) plus the
   precontext proxy; the node image no longer builds vLLM;

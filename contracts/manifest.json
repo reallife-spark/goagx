@@ -107,7 +107,7 @@
       "contract": "model-catalog",
       "file": "model-catalog.json",
       "schema_version": "1.0",
-      "sha256": "d1e9a4dacf53169a7a25a9f79995ad92e8a203aae21be90081b4e8869e08a9e8"
+      "sha256": "bad4bfdbc5efd067d28575f72e17c21839eb9d136f49006cfb38625bf5f630ef"
     },
     {
       "contract": "nocturnal-artifact-schema",

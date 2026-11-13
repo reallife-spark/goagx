@@ -98,7 +98,7 @@ reference page above.
    extra flags and `SPARKNET_LLM_MODEL_FILE` names the GGUF. The historical
    `VLLM_*` names stay contract.
 3. **Role-specific model files**: the setup script writes the teacher
-   (Qwen3.6-35B Q4_K_M) on `agx64` and the student (Qwen3.6-0.6B Q8_0) on
+   (Qwen3.6-35B Q4_K_M) on `agx64` and the student (Qwen3.6-27B Q4_K_M) on
    `agx32` into `spark-agx.env`; the compose mounts
    `/opt/sparknet/models` read-only. The active GGUF, tokenizer, precontext
    and KV live on the root NVMe; the vaults and the cold store stay on
@@ -124,6 +124,47 @@ Everything else — service names, container names, profiles, published
 ports, the env-key surface of the core services, precontext/rag, the
 stub/CPU overlay, `--engine stub` smoke — is identical by test
 (`tests/test_agx_node.py` asserts the parity).
+
+## Two model sets
+
+Two same-version pairs are kept for the bake-off:
+
+| Set | Teacher (`agx64`) | Student (`agx32`) |
+|---|---|---|
+| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) |
+| `qwen3` | Qwen3-32B Q4_K_M (19.8 GB) | Qwen3-0.6B Q8_0 (0.64 GB) |
+
+Both fit on the root NVMe during the bake-off. Select one with:
+
+```sh
+scripts/sparknet-model-set.py --role master --set qwen3.6 --precontext off
+scripts/sparknet-model-set.py --role peer --set qwen3.6 --precontext off
+```
+
+The helper writes `peer-node/.state/model-set.env` and recreates only the
+`vllm` service; the main env file and secrets are untouched. The
+`--precontext off` pass measures raw model speed; `--precontext on` measures
+the real node behavior with the MASTERSPIKE text + fabric digest.
+
+The benchmark uses `scripts/sparknet-model-bench.py` with the OpenAI bake-off
+configs, then `scripts/sparknet-teacher-student-eval.py` for the agreement
+metrics. The quality floor is 1.0. After the bake-off, the winner stays on
+root; the other set moves to `/mnt/ai/models/` and remains available for a
+later re-stage.
+
+### Bake-off result (2026-11-13)
+
+| Set | Teacher no-pc | Teacher pc | Student no-pc | Student pc | Agreement |
+|---|---:|---:|---:|---:|---:|
+| `qwen3.6` | 18.54 tok/s | 18.08 tok/s | 4.41 tok/s | 4.54 tok/s | 0.653 |
+| `qwen3` | 3.94 tok/s | 3.65 tok/s | 76.78 tok/s | 57.33 tok/s | 0.608 |
+
+Both sets passed the quality floor 1.0. The operator chose **`qwen3.6`** as the
+served winner because its teacher is ~5x faster for distillation; the Qwen3
+student is much faster for chat, but the Qwen3 teacher is slow. The Qwen3 set
+is in the cold store (`/mnt/ai/models/qwen3-32b-q4-k-m/`,
+`/mnt/ai/models/qwen3-0.6b-q8/`); re-stage it with
+`scripts/sparknet-model-stage.py --model-id qwen3-32b-q4-k-m --to-root`.
 
 ## Historical: vLLM-era measurements (2026-10-21)
 
@@ -239,7 +280,7 @@ the `confirm: user` column gains the AGX-specific physics:
 
 - the `jetson-containers` `llama_cpp` engine image loading the teacher on
   `agx64` and the student on `agx32`, and answering the OpenAI endpoints;
-- real tokens/s for Qwen3.6-35B Q4_K_M (agx64) and Qwen3.6-0.6B Q8_0
+- real tokens/s for Qwen3.6-35B Q4_K_M (agx64) and Qwen3.6-27B Q4_K_M
   (agx32) on `sm_72`, with MAXN set;
 - the precontext present in the request and the `/health` endpoint green;
 - NVML/gpu-sidecar telemetry reading Jetson's driver honestly

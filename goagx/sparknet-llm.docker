@@ -22,11 +22,42 @@
 #
 #   docker build -f goagx/sparknet-llm.docker -t sparknet-llm:agx .
 #
-# The base is a pinned multi-arch tag by digest. `SPARKNET_LLM_BASE` is the
-# escape hatch for a locally built `jetson-containers` image when the published
-# `r35.2.1` tag does not match the host's CUDA arch.
+# The runtime base is the pinned `jetson-containers` `llama_cpp` image. The
+# published `r35.2.1` tag predates the `llama-server` target, so the server is
+# built here from the same upstream ref the `jetson-containers` package pins
+# (`b9016`) in a builder stage on the L4T PyTorch base, then copied into the
+# runtime image. `SPARKNET_LLM_BASE` remains the escape hatch for a locally
+# built `jetson-containers` image.
 ARG SPARKNET_LLM_BASE=dustynv/llama_cpp:r35.2.1@sha256:a5659335c4b5d31f82b29ec5a04e6e77d219897eef0028db841c9d4c832b90f0
+ARG L4T_BASE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472
+ARG LLAMA_CPP_REPO=https://github.com/ggml-org/llama.cpp.git
+ARG LLAMA_CPP_REF=b9016
 
+# --- llama-server builder ----------------------------------------------------
+# The CUDA compiler comes from the L4T PyTorch base, not the runtime image.
+# The target is the one binary the engine needs; curl/openssl are deliberately
+# off, so the runtime image needs no extra shared libraries.
+FROM ${L4T_BASE} AS llama-build
+
+ARG LLAMA_CPP_REPO
+ARG LLAMA_CPP_REF
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git build-essential cmake \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/libcuda.so \
+ && git clone --depth 1 --branch "${LLAMA_CPP_REF}" "${LLAMA_CPP_REPO}" /src/llama.cpp \
+ && cmake -S /src/llama.cpp -B /src/llama.cpp/build \
+      -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_CUDA=ON -DGGML_NATIVE=OFF -DGGML_CUDA_F16=ON -DGGML_CUDA_FA_ALL_QUANTS=ON \
+      -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+      -DCMAKE_CUDA_ARCHITECTURES=72 \
+      -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--no-as-needed -lcuda" \
+      -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,--no-as-needed -lcuda" \
+ && cmake --build /src/llama.cpp/build --parallel "$(nproc)" --target llama-server \
+ && install -D -m 0755 /src/llama.cpp/build/bin/llama-server /opt/llama/bin/llama-server
+
+# --- the engine image --------------------------------------------------------
 FROM ${SPARKNET_LLM_BASE}
 
 ARG TARGETARCH
@@ -47,6 +78,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # tini is the PID 1 that forwards SIGTERM to the two children (llama-server and
 # the proxy). The base's Python already carries FastAPI/uvicorn from the
 # llama_cpp package; httpx is the proxy's upstream client.
+COPY --from=llama-build /opt/llama/bin/llama-server /usr/local/bin/llama-server
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl tini \
  && rm -rf /var/lib/apt/lists/* \
@@ -56,7 +89,7 @@ RUN apt-get update \
       python3 -m pip install --no-cache-dir httpx; \
     fi \
  && python3 -c "import fastapi, uvicorn, httpx" \
- && test -x "$(command -v llama-server)"
+ && test -x /usr/local/bin/llama-server
 
 # The dispatcher and the proxy are fabric code, not model code. The precontext
 # is the MASTERSPIKE system prompt plus the digest generated from contracts/ at

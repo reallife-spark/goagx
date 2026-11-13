@@ -161,14 +161,38 @@ See [§8](#8-the-audio-shim).
 
 | Setting | Value | Why |
 |---|---|---|
-| Teacher file (`agx64`) | `/opt/sparknet/models/qwen3.6-35b-q4_k_m.gguf` | Largest same-version model that fits 64 GB at a responsive quant. |
-| Student file (`agx32`) | `/opt/sparknet/models/qwen3.6-0.6b-q8_0.gguf` | Smallest same-version model at Q8_0. |
+| Teacher file (`agx64`) | `/opt/sparknet/models/qwen3.6-35b-a3b-q4_k_m.gguf` | Largest same-version model that fits 64 GB at a responsive quant. |
+| Student file (`agx32`) | `/opt/sparknet/models/qwen3.6-27b-q4_k_m.gguf` | Smallest Qwen3.6 release; Q4_K_M fits the 32 GB peer. |
 | `VLLM_MAX_MODEL_LEN` / `SPARKNET_LLM_CTX` | `8192` | Fits the context with headroom; measured before raising. |
 | `SPARKNET_LLM_NGL` | `99` | All layers on the GPU. |
 
 Every one of them is an overridable env-file value. The active GGUF,
 tokenizer, precontext and KV live on the root NVMe; the vaults and the cold
 model store stay on `/mnt/ai`.
+
+### 4.7 Two sets for the bake-off
+
+| Set | Teacher (`agx64`) | Student (`agx32`) |
+|---|---|---|
+| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) |
+| `qwen3` | Qwen3-32B Q4_K_M (19.8 GB) | Qwen3-0.6B Q8_0 (0.64 GB) |
+
+`scripts/sparknet-model-set.py --role master|peer --set qwen3.6|qwen3
+--precontext on|off` writes `peer-node/.state/model-set.env` and recreates
+only `vllm`. Run the no-precontext pass first, then the precontext pass.
+Both sets fit on root during the comparison; the winner stays on root and the
+other moves to `/mnt/ai/models/`.
+
+The 2026-11-13 bake-off (quality floor 1.0) measured:
+
+| Set | Teacher no-pc | Teacher pc | Student no-pc | Student pc | Agreement |
+|---|---:|---:|---:|---:|---:|
+| `qwen3.6` | 18.54 | 18.08 | 4.41 | 4.54 | 0.653 |
+| `qwen3` | 3.94 | 3.65 | 76.78 | 57.33 | 0.608 |
+
+The operator chose `qwen3.6` as the served winner because its teacher is ~5x
+faster for distillation; the Qwen3 set is in the cold store and can be
+re-staged with `scripts/sparknet-model-stage.py`.
 
 ---
 
@@ -474,7 +498,7 @@ grammar, and the compose resolution.
 | Thing | Where | Notes |
 |---|---|---|
 | Model file | `SPARKNET_LLM_MODEL_FILE` | Teacher on `agx64`, student on `agx32`; a read-only bind from `/opt/sparknet/models`. |
-| Model alias | `VLLM_MODEL` | The OpenAI model id; defaults to `qwen3.6-35b` / `qwen3.6-0.6b`. |
+| Model alias | `VLLM_MODEL` | The OpenAI model id; defaults to `qwen3.6-35b` / `qwen3.6-27b`. |
 | `VLLM_MAX_MODEL_LEN` | compose env | `8192`; maps to `llama-server --ctx-size`. |
 | `SPARKNET_LLM_CTX` | compose env | Explicit context override; empty falls back to `VLLM_MAX_MODEL_LEN`. |
 | `SPARKNET_LLM_NGL` | compose env | `99` GPU layers. |
