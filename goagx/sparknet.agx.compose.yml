@@ -1,14 +1,20 @@
-# sparknet.agx.compose.yml — the AGX Xavier node as one image, many services.
+# sparknet.agx.compose.yml — the AGX Xavier node: one node image, one engine
+# image, the same service contract as the Spark node.
 #
-# The AGX twin of spark.compose.yml: same service names, same ports, same
-# container names, same profiles, same state contract — so every test, tool
-# and runbook step that works on the Spark node works here. What changes is
-# the engine layer behind those names (goagx/sparknet.agx.docker builds the
-# image; spark-entrypoint.sh dispatches):
+# The AGX twin of spark.compose.yml: same service names, ports, container
+# names, profiles and state contract — so every test, tool and runbook step
+# that works on the Spark node works here. Two images share the surface:
 #
-#   vllm         vLLM v0.2.7 built from source (sm_72 via sm_70+PTX JIT),
-#                default model mistralai/Mistral-7B-Instruct-v0.2 — a 7B fits
-#                Xavier's 8-16 GB, a 32B does not
+#   sparknet-agx-node   goSpark, the Python compute plane, the bundle, the aux
+#                       llama.cpp/whisper.cpp engines and the vllm-stub.
+#                       `goagx/sparknet.agx.docker` builds it.
+#   sparknet-llm:agx    the text engine: llama-server from dusty-nv's
+#                       jetson-containers llama_cpp package, plus the
+#                       precontext proxy. `goagx/sparknet-llm.docker` builds it.
+#
+#   vllm         llama-server serving SPARKNET_LLM_MODEL_FILE on :8000 with
+#                the OpenAI surface; the teacher on agx64 (64 GB), the student
+#                on agx32 (32 GB). The vLLM-era names stay historical contract.
 #   vllm-embed   llama.cpp llama-server, baked GGUF bge-m3 (OpenAI
 #                /v1/embeddings), CPU
 #   vllm-rerank  llama.cpp llama-server --reranking, baked GGUF
@@ -21,6 +27,10 @@
 # model. The env file is separate from the Spark node's (spark-agx.env vs
 # spark.env) so switching platforms never inherits a stale base/model line.
 #
+# The text model file is a host bind mount from the root model directory
+# (`/opt/sparknet/models`), read-only. The model container never mounts a
+# vault, a key or the node state directory.
+#
 # Bring it up (the setup script does this; this is the manual path):
 #
 #   make -C peer-node dist
@@ -28,9 +38,6 @@
 #   make -C gospark build build-gpu
 #   docker compose -f goagx/sparknet.agx.compose.yml --env-file peer-node/.state/spark-agx.env build
 #   docker compose -f goagx/sparknet.agx.compose.yml --env-file peer-node/.state/spark-agx.env up -d
-#
-# (Build it on the Xavier: the vLLM/xformers compile needs the target's GPU
-# stack and unified memory — goagx/README.md.)
 #
 # Profiles — identical surface to spark.compose.yml:
 #
@@ -48,6 +55,9 @@
 # No GPU at hand? The same CPU overlay applies — service names match:
 #
 #   docker compose -f goagx/sparknet.agx.compose.yml -f spark.compose.cpu.yml up -d
+#
+# The CPU overlay points `vllm` at the node image's `vllm-stub`; it does not
+# build or run the LLM image.
 #
 # Everything is variable-interpolated (docker compose reads the env file or
 # .env next to this file). Nothing is hard-coded.
@@ -71,19 +81,12 @@ x-agx-node: &agx-node
       L4T_BASE: ${L4T_BASE:-nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472}
       OPENCODE_VERSION: ${OPENCODE_VERSION:-2.2.5}
       NATS_VERSION: ${NATS_VERSION:-2.14.2}
-      # The build escape hatches: point the engine at a fork's fixes without
-      # patching anything (documented in goagx/README.md).
-      VLLM_GIT_URL: ${VLLM_GIT_URL:-https://github.com/vllm-project/vllm.git}
-      VLLM_GIT_REF: ${VLLM_GIT_REF:-v0.2.7}
-      XFORMERS_PIP_SPEC: ${XFORMERS_PIP_SPEC:-xformers==0.0.20}
-      TRANSFORMERS_PIP_SPEC: ${TRANSFORMERS_PIP_SPEC:-transformers==4.37.2}
-      MAX_JOBS: ${MAX_JOBS:-4}
   restart: unless-stopped
 
 # Environment every node service shares. Identical contract to the Spark
 # node: the shared secret is generated once into --env-file and the host
-# state dir; the dispatcher persists/reads it. VLLM_MODEL defaults to a 7B
-# because Xavier's memory is 8-16 GB, not 128.
+# state dir; the dispatcher persists/reads it. VLLM_MODEL is the served
+# alias, not a Hugging Face repo: the AGX text engine loads a GGUF file.
 x-agx-env: &agx-env
   SPARKNET_NODE_ID: ${SPARKNET_NODE_ID:-spark-01}
   SPARKNET_ROLE: ${SPARKNET_ROLE:-peer}
@@ -95,7 +98,14 @@ x-agx-env: &agx-env
   # `sparknet-node-setup.sh --master-pub/--registry`. In-container paths.
   SPARKNET_MASTER_PUB: ${SPARKNET_MASTER_PUB:-}
   GOSPARK_REGISTRY_FILE: ${GOSPARK_REGISTRY_FILE:-}
-  VLLM_MODEL: ${VLLM_MODEL:-mistralai/Mistral-7B-Instruct-v0.2}
+  VLLM_MODEL: ${VLLM_MODEL:-qwen3.6-35b}
+  TZ: ${TZ:-UTC}
+
+# The text engine sees no shared secret, no registry and no state dir: it is
+# compute, not authority. It gets only the alias and the locale; the model
+# file is a separate read-only bind mount.
+x-llm-env: &llm-env
+  VLLM_MODEL: ${VLLM_MODEL:-qwen3.6-35b}
   TZ: ${TZ:-UTC}
 
 # .state is a HOST bind mount, never a named volume: keys and the signed
@@ -118,17 +128,6 @@ x-gpu: &gpu
           - driver: nvidia
             count: all
             capabilities: [gpu]
-
-# vLLM wants a large shared-memory segment and host IPC for its workers.
-# 4gb, not the Spark default's 16gb: the whole machine is 8-16 GB and the
-# default model is a 7B. Raise VLLM_SHM_SIZE for a bigger model on a 32 GB
-# Xavier.
-x-vllm-runtime: &vllm-runtime
-  ipc: host
-  shm_size: ${VLLM_SHM_SIZE:-4gb}
-  ulimits:
-    memlock: -1
-    stack: 67108864
 
 # --- services ----------------------------------------------------------------
 
@@ -154,33 +153,49 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # The text LLM. Same wiring as the Spark node (MASTERSPIKE precontext
-  # through the wrapper chat template, LAN-exposed on :8000) — only the
-  # engine underneath differs: the source-built vLLM and a model that fits
-  # Xavier. SPARKNET_PREFIX_CACHING is honoured by the dispatcher (vLLM
-  # 0.2.x supports --enable-prefix-caching).
+  # The text LLM. `sparknet-llm:agx` carries llama-server and the precontext
+  # proxy; the node image carries goSpark, compute, the aux engines and the
+  # stub. Same service name, port and OpenAI surface as the Spark node.
   vllm:
-    <<: [*agx-node, *vllm-runtime, *gpu]
+    <<: [*gpu]
+    image: sparknet-llm:${SPARKNET_LLM_TAG:-agx}
+    build:
+      context: ..
+      dockerfile: goagx/sparknet-llm.docker
+      additional_contexts:
+        # The LLM image does not use goSpark, but keeping the named context
+        # here lets the CPU overlay switch `dockerfile` to the node image
+        # without dropping it.
+        gospark: ${GOSPARK_DIR:-../gospark}
+      args:
+        SPARKNET_LLM_BASE: ${SPARKNET_LLM_BASE:-dustynv/llama_cpp:r35.2.1@sha256:a5659335c4b5d31f82b29ec5a04e6e77d219897eef0028db841c9d4c832b90f0}
     container_name: sparknet-vllm
     command: ["${VLLM_SERVICE_CMD:-vllm}"]
+    restart: unless-stopped
     environment:
-      <<: *agx-env
+      <<: *llm-env
       VLLM_PORT: "8000"
-      VLLM_GPU_MEM_UTIL: ${VLLM_GPU_MEM_UTIL:-0.85}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
       VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
-      SPARKNET_MULTIMODAL: ${SPARKNET_MULTIMODAL:-}
-      SPARKNET_MM_LIMIT: ${SPARKNET_MM_LIMIT:-}
-      # The fabric precontext is baked into the chat template. On a small
-      # context window the raw system prompt (masterspike + digest) can
-      # exceed it, so the byte cap is configurable per node: 0 = no cap.
+      # The explicit GGUF. The setup script writes a role default (teacher on
+      # agx64, student on agx32); the operator can override it in the env file.
+      SPARKNET_LLM_MODEL_FILE: ${SPARKNET_LLM_MODEL_FILE:-/opt/sparknet/models/qwen3.6-35b-q4_k_m.gguf}
+      SPARKNET_LLM_MODEL_ALIAS: ${SPARKNET_LLM_MODEL_ALIAS:-}
+      SPARKNET_LLM_CTX: ${SPARKNET_LLM_CTX:-}
+      SPARKNET_LLM_NGL: ${SPARKNET_LLM_NGL:-99}
+      SPARKNET_LLM_PARALLEL: ${SPARKNET_LLM_PARALLEL:-1}
+      SPARKNET_LLM_THREADS: ${SPARKNET_LLM_THREADS:-}
+      SPARKNET_LLM_EXTRA_ARGS: ${SPARKNET_LLM_EXTRA_ARGS:-}
+      # The fabric precontext is injected by the proxy as a system message.
+      # On a small context window the raw system prompt (masterspike + digest)
+      # can exceed it, so the byte cap is configurable per node: 0 = no cap.
       SPARKNET_PRECONTEXT: ${SPARKNET_PRECONTEXT:-1}
       SPARKNET_PRECONTEXT_MAX_BYTES: ${SPARKNET_PRECONTEXT_MAX_BYTES:-}
     volumes:
-      - *state-volume
       - type: bind
-        source: ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}
-        target: /root/.cache/huggingface
+        source: ${SPARKNET_MODELS_HOST:-/opt/sparknet/models}
+        target: /opt/sparknet/models
+        read_only: true
     ports:
       - "${SPARKNET_BIND_API:-0.0.0.0}:8000:8000"
     healthcheck:

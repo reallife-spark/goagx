@@ -7,22 +7,24 @@ tree. Fixes belong upstream in [sparknet](https://github.com/reallife-spark/spar
 
 | | |
 |---|---|
-| Published | 2026-11-13T01:13:29Z |
-| sparknet | `53123ee1e60b6374a8f5749d61216ed46552379c` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
+| Published | 2026-11-13T13:08:12Z |
+| sparknet | `87ab80eece0e398f9bb532cabeb8872b676cba9c` of [reallife-spark/sparknet](https://github.com/reallife-spark/sparknet) |
 | goSpark | `2e8b2be7ab1a25dc981aa8b2e0c9c16c85bfab19` of [https://github.com/reallife-spark/gospark.git](https://github.com/reallife-spark/gospark.git) |
-| Platform | NVIDIA Jetson AGX Xavier — `sm_72`, L4T r35 (JetPack 5), 16 GB |
-| Engine | vLLM v0.2.7 built from source inside the node image |
-| Base image | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472` |
+| Platform | NVIDIA Jetson AGX Xavier — `sm_72`, L4T r35 (JetPack 5), 64 GB / 32 GB |
+| Engine | `llama.cpp` `llama-server` from `jetson-containers` (`sparknet-llm:agx`) |
+| Engine base | `dustynv/llama_cpp:r35.2.1@sha256:a5659335c4b5d31f82b29ec5a04e6e77d219897eef0028db841c9d4c832b90f0` |
+| Node base | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3@sha256:545a0f62fb4a5fd2d8c511134f6c55d451ae1565075dcc67123b0c422a469472` |
 
 ## What this is
 
 A fully self-hostable sparknet node for the AGX Xavier: the node image
-(`goagx/sparknet.agx.docker` — source-built vLLM + llama.cpp/whisper.cpp +
-goSpark), the 14-service compose surface, the peer+master role vaults, the
-cross-role `contracts/` and the signed-authorization implementation in
-`shared/`. A role subvault alone is not a deployment; this repo ships the
-smallest tree that actually runs, assembled by the fabric's own bundle
-machinery.
+(`goagx/sparknet.agx.docker` — goSpark + llama.cpp/whisper.cpp aux engines +
+the bundle) and the text-engine image (`goagx/sparknet-llm.docker` —
+`llama-server` + the fabric precontext proxy), the 14-service compose surface,
+the peer+master role vaults, the cross-role `contracts/` and the
+signed-authorization implementation in `shared/`. A role subvault alone is not
+a deployment; this repo ships the smallest tree that actually runs, assembled
+by the fabric's own bundle machinery.
 
 ## Manuals
 
@@ -42,9 +44,9 @@ files and not promises.
 
 Prerequisites: JetPack 5.x (L4T r35) with the docker runtime, BuildKit
 (`docker buildx`), git, and credentials that can read the private goSpark repo
-(a fine-grained PAT or deploy key — never commit one). Budget **~25 GB free
-disk**, **≥ 8 GB swap** (the vLLM/xformers source build OOM-kills itself on a
-16 GB machine without it) and **hours** for the first image build.
+(a fine-grained PAT or deploy key — never commit one). Budget **~12 GB free
+disk** for the two images plus the active GGUF, and enough root disk for the
+teacher (agx64, ~21 GB Q4_K_M) or the student (agx32, ~1 GB Q8_0).
 
 ```sh
 git clone https://github.com/reallife-spark/goagx.git
@@ -53,8 +55,10 @@ cd goagx
                                   # sparknet-node-setup.sh --platform agx up
 ```
 
-First bring-up serves the text node (nats, vLLM, compute, agent, gpu) on the
-default ports — OpenAI API on `:8000`, node gateway on `:8080`. Then:
+First bring-up serves the text node (nats, the llama.cpp text engine, compute,
+agent, gpu) on the default ports — OpenAI API on `:8000`, node gateway on
+`:8080`. Stage the teacher/student GGUF under `/opt/sparknet/models/` before
+the first `up`; the compose file mounts it read-only. Then:
 
 ```sh
 # Join an existing fabric (peer): pin the Master key + adopt the signed registry
@@ -92,12 +96,12 @@ push.
 
 | Path | Contents |
 |---|---|
-| `goagx/` | the AGX image surface: dockerfile, compose file, audio shim, `bootstrap-agx.sh`, `GOSPARK_PIN`, resource-first README, AGX manual |
+| `goagx/` | the AGX image surface: node + text-engine dockerfiles, compose file, audio shim, `bootstrap-agx.sh`, `GOSPARK_PIN`, resource-first README, AGX manual |
 | `peer-node/` `master-node/` | both role subvaults (keys, units, guard, services) |
 | `contracts/` `shared/` | the cross-role contract and the signed-authorization implementation — a node cannot run without them |
 | `scripts/` | bundle, env-init, this repo's publish/verify tool |
 | `sparknet-node-setup.sh` | the one-command bring-up (`--platform agx`) |
-| `spark-entrypoint.sh` `spark-precontext.py` | the image's dispatcher and precontext builder |
+| `spark-entrypoint.sh` `sparknet-llm-entrypoint.py` `sparknet-llm-proxy.py` `spark-precontext.py` | the node dispatcher, the text-engine dispatcher, the precontext proxy and the precontext builder |
 | `VERSIONS.json` `SHA256SUMS` | machine-readable pins + integrity manifest |
 
 ## Updating

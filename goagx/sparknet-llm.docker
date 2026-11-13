@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1
+#
+# sparknet-llm.docker — the AGX text-engine image.
+#
+# The node image (`sparknet.agx.docker`) no longer builds vLLM. This image
+# carries the engine instead: `llama-server` from dusty-nv's
+# `jetson-containers` `llama_cpp` package, built for L4T r35 / sm_72, plus the
+# fabric precontext proxy and the stable OpenAI surface.
+#
+# Why a separate image:
+#   * the vLLM Python/torch/xformers dependency stack was the blocker on the
+#     Xavier hosts; llama.cpp is a C++/CUDA binary with a small runtime;
+#   * the text engine changes independently of goSpark, the compute plane, the
+#     aux llama.cpp/whisper.cpp engines and the bundle;
+#   * the model container mounts only the root model directory — never a
+#     vault, a key or the node state directory.
+#
+# The compose service name (`vllm`), port (8000), OpenAI endpoints and
+# `VLLM_*` environment names are historical contract, not a vLLM dependency.
+#
+# Build (from the fabric root):
+#
+#   docker build -f goagx/sparknet-llm.docker -t sparknet-llm:agx .
+#
+# The base is a pinned multi-arch tag by digest. `SPARKNET_LLM_BASE` is the
+# escape hatch for a locally built `jetson-containers` image when the published
+# `r35.2.1` tag does not match the host's CUDA arch.
+ARG SPARKNET_LLM_BASE=dustynv/llama_cpp:r35.2.1@sha256:a5659335c4b5d31f82b29ec5a04e6e77d219897eef0028db841c9d4c832b90f0
+
+FROM ${SPARKNET_LLM_BASE}
+
+ARG TARGETARCH
+
+LABEL org.opencontainers.image.title="sparknet AGX Xavier text engine" \
+      org.opencontainers.image.description="SparkNet text engine: llama.cpp llama-server + fabric precontext proxy + OpenAI API (NVIDIA AGX Xavier / sm_72, ARM64)." \
+      org.opencontainers.image.source="https://github.com/reallife-spark/sparknet" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    SPARKNET_FABRIC_ROOT=/opt/sparknet \
+    SPARKNET_CONTEXT_DIR=/opt/sparknet/context \
+    SPARKNET_LLM_PORT=8000 \
+    SPARKNET_LLM_UPSTREAM_PORT=8004 \
+    VLLM_PORT=8000 \
+    VLLM_MODEL=sparknet-llm
+
+# tini is the PID 1 that forwards SIGTERM to the two children (llama-server and
+# the proxy). The base's Python already carries FastAPI/uvicorn from the
+# llama_cpp package; httpx is the proxy's upstream client.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && if command -v uv >/dev/null 2>&1; then \
+      uv pip install --system httpx; \
+    else \
+      python3 -m pip install --no-cache-dir httpx; \
+    fi \
+ && python3 -c "import fastapi, uvicorn, httpx" \
+ && test -x "$(command -v llama-server)"
+
+# The dispatcher and the proxy are fabric code, not model code. The precontext
+# is the MASTERSPIKE system prompt plus the digest generated from contracts/ at
+# build time; the proxy injects it into chat completions.
+COPY sparknet-llm-entrypoint.py /usr/local/bin/sparknet-llm-entrypoint.py
+COPY sparknet-llm-proxy.py /opt/sparknet/sparknet_llm_proxy.py
+COPY spark-precontext.py /opt/sparknet/spark-precontext.py
+COPY contracts/ /opt/sparknet/contracts/
+COPY peer-node/manifests/masterspike/vllm-system-prompt.md /opt/sparknet/context/masterspike-system-prompt.md
+
+RUN mkdir -p "${SPARKNET_CONTEXT_DIR}" \
+ && python3 /opt/sparknet/spark-precontext.py digest \
+      --contracts /opt/sparknet/contracts \
+      --out "${SPARKNET_CONTEXT_DIR}/fabric-digest.md" \
+ && test -s "${SPARKNET_CONTEXT_DIR}/masterspike-system-prompt.md" \
+ && test -s "${SPARKNET_CONTEXT_DIR}/fabric-digest.md" \
+ && chmod 0755 /usr/local/bin/sparknet-llm-entrypoint.py \
+ && python3 -m py_compile /usr/local/bin/sparknet-llm-entrypoint.py /opt/sparknet/sparknet_llm_proxy.py \
+ && /usr/local/bin/sparknet-llm-entrypoint.py help >/dev/null
+
+WORKDIR /opt/sparknet
+
+# The entrypoint starts llama-server on loopback and the OpenAI proxy on the
+# published port. Nothing here bakes a model file, a vault path or a secret:
+# SPARKNET_LLM_MODEL_FILE is supplied by compose from the host's root model
+# directory, read-only.
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "/usr/local/bin/sparknet-llm-entrypoint.py"]
+CMD ["vllm"]

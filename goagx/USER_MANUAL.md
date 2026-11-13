@@ -93,16 +93,14 @@ and why.
 | | DGX Spark | AGX Xavier |
 |---|---|---|
 | GPU / arch | GB10, `sm_121a` (Blackwell family) | Xavier, `sm_72` (Volta) |
-| Memory | 128 GB unified | 16 GB LPDDR4X (~137 GB/s); Orin variants 32/64 GB |
-| Stack | cu128-era, torch ≥ 2.7 | JetPack r35 / L4T r35, **cu114**, torch 2.0.0, **Python 3.8**, Ubuntu 20.04 |
-| Base image | the DGX base | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` (arm64) |
-| Arch build flag | `sm_121a` | `TORCH_CUDA_ARCH_LIST="7.0+PTX"` |
-| Engine | prebuilt vLLM wheels | **vLLM v0.2.7, built from source** |
+| Memory | 128 GB unified | **64 GB (`agx64`) / 32 GB (`agx32`)**, LPDDR4X (~136.5 GB/s) |
+| Stack | cu128-era, torch ≥ 2.7 | JetPack r35 / L4T r35, **cu114**, **Python 3.8**, Ubuntu 20.04 |
+| Node base | the DGX base | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` (arm64) |
+| Engine base | prebuilt vLLM wheels | `dustynv/llama_cpp:r35.2.1` (arm64, `jetson-containers`) |
+| Arch build flag | `sm_121a` | `CMAKE_CUDA_ARCHITECTURES=72` in the engine image |
 
-Two consequences of the arch flag: vLLM v0.2.7 accepts only `7.0+PTX` for
-this family, so the `sm_72` code path arrives by **PTX JIT** rather than from
-a native SASS build. And the whole toolchain is a decade-old stack — which is
-the reason the image pins as tightly as it does.
+The hosts are **AGX Xavier**, not AGX Orin and not 16 GB. The old 16 GB /
+Orin notes are historical; the current hardware truth is the table above.
 
 ---
 
@@ -111,41 +109,42 @@ the reason the image pins as tightly as it does.
 Everything below is a deliberate, tested delta. Everything *not* listed here
 is identical, and the fabric's test suite asserts that.
 
-### 4.1 The base image and the toolchain gate
+### 4.1 Two images, one service contract
 
-`l4t-pytorch:r35.2.1-pth2.0-py3` (arm64) replaces the DGX base, and an
-`nvcc` gate asserts the toolchain is actually present in the base layer — so
-a silently different base fails the build instead of the inference.
+The AGX surface is two images:
 
-### 4.2 vLLM built from source
-
-`VLLM_GIT_REF=v0.2.7`, with `ARG VLLM_GIT_URL` kept as the escape hatch: if
-the pinned ref ever stops building on this stack, point it at a maintained
-fork's `packages/llm/vllm` recipe instead of re-deriving the build.
-
-Three build-time relaxations exist because the base is old:
-
-| Arg | Value | Why |
+| Image | Contains | Does not contain |
 |---|---|---|
-| `TORCH_CUDA_ARCH_LIST` | `7.0+PTX` | v0.2.7 accepts only this for the family. |
-| `XFORMERS_PIP_SPEC` | `xformers==0.0.20` | A version that builds against torch 2.0.0. |
-| `TRANSFORMERS_PIP_SPEC` | `transformers==4.37.2` | Matching the same era. |
+| `sparknet-agx-node` | goSpark, the Python compute plane, the bundle, the aux llama.cpp/whisper.cpp engines, `vllm-stub` | vLLM, the teacher/student GGUF |
+| `sparknet-llm:agx` | `llama-server` from `jetson-containers` `llama_cpp`, the precontext proxy | goSpark, the vault, keys, the signer, the aux services |
 
-xformers is built from its sdist here. **Expect hours of compilation on the
-Xavier, not minutes.** The gate after installation is `import vllm, vllm._C` —
-the import alone is not enough, because the compiled extension is what
-matters.
+The compose service name (`vllm`), port 8000, OpenAI endpoints and the
+`VLLM_*` environment names are historical contract, not a vLLM dependency.
 
-### 4.3 `VLLM_CLI` decides the engine command
+### 4.2 The engine image
 
-The image default is `python3 -m vllm.entrypoints.openai.api_server`. When the
-last word is `serve`, the launcher speaks the modern dialect
-(`--enable-prefix-caching`, `--limit-mm-per-prompt`); otherwise it passes only
-`--model` positionally.
+`sparknet-llm:agx` is `FROM ${SPARKNET_LLM_BASE}`, pinned by digest to
+`dustynv/llama_cpp:r35.2.1`. It runs `llama-server` on loopback and a small
+OpenAI proxy on the published port. The proxy injects the MASTERSPIKE text and
+fabric digest as the first system message (merging an existing one), because
+this `llama.cpp` build has no `--system-prompt-file` flag. The image carries
+no model: `SPARKNET_LLM_MODEL_FILE` is a read-only host bind from
+`/opt/sparknet/models`.
 
-That one switch is what lets the same image run v0.2.7 today and a newer
-engine later via `VLLM_GIT_REF` + `VLLM_CLI` overrides — **without forking
-the entrypoint**.
+### 4.3 The service contract
+
+| Historical name | Maps to |
+|---|---|
+| `VLLM_MODEL` | the served alias (`llama-server --alias`) |
+| `VLLM_PORT` | the proxy's published port (8000) |
+| `VLLM_MAX_MODEL_LEN` | `llama-server --ctx-size` |
+| `VLLM_EXTRA_ARGS` | extra `llama-server` flags |
+| `SPARKNET_LLM_MODEL_FILE` | the GGUF path |
+| `SPARKNET_LLM_NGL` | `--n-gpu-layers` (99) |
+| `SPARKNET_LLM_PARALLEL` | `--parallel` (1) |
+
+The CPU `vllm-stub` stays on the node image; `--engine stub` layers
+`spark.compose.cpu.yml`, which selects the node image and `vllm-stub`.
 
 ### 4.4 Rerank and embed are llama.cpp, not vLLM
 
@@ -158,85 +157,78 @@ build gate, built `BUILD_SHARED_LIBS=OFF` (static, because upstream has no
 
 See [§8](#8-the-audio-shim).
 
-### 4.6 Defaults that fit 16 GB
+### 4.6 Role-specific GGUF
 
 | Setting | Value | Why |
 |---|---|---|
-| Model | `mistralai/Mistral-7B-Instruct-v0.2` | The Spark default (Qwen2.5-32B) does not fit here. |
-| `VLLM_MAX_MODEL_LEN` | `8192` | Fits the 8 192-token window with headroom. |
-| `VLLM_SHM_SIZE` | `4gb` | Shared-memory sizing for the engine. |
+| Teacher file (`agx64`) | `/opt/sparknet/models/qwen3.6-35b-q4_k_m.gguf` | Largest same-version model that fits 64 GB at a responsive quant. |
+| Student file (`agx32`) | `/opt/sparknet/models/qwen3.6-0.6b-q8_0.gguf` | Smallest same-version model at Q8_0. |
+| `VLLM_MAX_MODEL_LEN` / `SPARKNET_LLM_CTX` | `8192` | Fits the context with headroom; measured before raising. |
+| `SPARKNET_LLM_NGL` | `99` | All layers on the GPU. |
 
-Every one of them is an overridable compose env.
+Every one of them is an overridable env-file value. The active GGUF,
+tokenizer, precontext and KV live on the root NVMe; the vaults and the cold
+model store stay on `/mnt/ai`.
 
 ---
 
 ## 5. The resource-first verdict
 
-The standing rule in this project is **resource-first**: check NVIDIA's
-catalog before building something of our own, and record the verdict. The
-record for this platform is in `README.md` §"Resource-first verdict"; the
-summary:
+The standing rule in this project is **resource-first**: check the existing
+resources before building something of our own, and record the verdict. The
+vLLM source build was the blocker: the operator could not satisfy its
+Python/PyTorch/xformers dependency stack on either Xavier host. The review of
+`dusty-nv` (`references/dusty-nv-jetson-llm-containers-2026-11-13.md` in the
+fabric) selected:
 
-- **NVIDIA publishes no vLLM container for the r35 branch** — stated by an
-  NVIDIA moderator in the "Suitable VLLM Container for Jetson Xavier NX with
-  JetPack 5.1.4" thread, pointing at the jetson-containers Dockerfile as the
-  way to build one.
-- `nvcr.io/nvidia/vllm` (NGC) is current-generation only: tags 25.09-py3 …
-  26.06-py3 on a Python 3.12 base. It covers neither `sm_72` nor the
-  r35/cu114 stack.
-- The community route (`jetson-containers build vllm:<modern>`) fails on
-  JetPack 5 exactly where expected: modern vLLM needs Python ≥ 3.10 and
-  triton, while r35 ships Python 3.8 (reported on AGX Xavier r35.6,
-  2026-02/03).
+- **`jetson-containers` `llama_cpp`** — `llama-server`, L4T `>=34.1.0`,
+  CUDA, OpenAI-compatible API; the primary engine;
+- **Ollama** — the fallback and the peer's own AI-stack server;
+- **MLC-LLM** — optional experiment; `vLLM`, `SGLang`, `TGI`,
+  `TensorRT-Edge-LLM` are heavier or not the Xavier path.
 
-**Verdict:** build vLLM from source inside the image, pinned to a version
-whose era still supported `sm_72` and Python 3.8, and keep the URL as an
-escape hatch. Everything else — NATS, Open WebUI, goSpark, llama.cpp,
-whisper.cpp — was already pinned per ref or commit in the Spark image and
-carries over unchanged.
-
-The search helper is `make nv-search q="…"` from the fabric root; the wider
-record lives in the fabric's `references/nvidia-build-catalog.md`.
+**Verdict:** the text engine is `sparknet-llm:agx`, `FROM` the pinned
+`dustynv/llama_cpp:r35.2.1` image. The node image no longer builds vLLM. The
+decision is `docs/adr/0021-agx-llm-engine.md` in the fabric.
 
 ---
 
-## 6. The image
+## 6. The images
 
 ```sh
 # The build context IS the fabric root — not this directory.
 cd <fabric-root>
 docker buildx build --platform linux/arm64 \
   -f goagx/sparknet.agx.docker \
+  --build-context gospark=<path-to-gospark> \
   -t sparknet-agx-node:dev --load .
+docker buildx build --platform linux/arm64 \
+  -f goagx/sparknet-llm.docker \
+  -t sparknet-llm:agx --load .
 ```
 
-Stages and their pins:
+Node image stages and pins:
 
 | Stage / arg | Value |
 |---|---|
-| `L4T_BASE` | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` |
-| `VLLM_GIT_URL` / `VLLM_GIT_REF` | the vLLM repository / `v0.2.7` |
-| `TORCH_CUDA_ARCH_LIST` | `7.0+PTX` |
-| `XFORMERS_PIP_SPEC` | `xformers==0.0.20` |
-| `TRANSFORMERS_PIP_SPEC` | `transformers==4.37.2` |
-| `MAX_JOBS` | `4` — the compile parallelism the 16 GB machine can survive |
+| `L4T_BASE` | `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` (pinned by digest) |
 | `OPENCODE_VERSION` | `2.2.5` |
 | `NATS_VERSION` | `2.14.2` |
 | `LLAMA_CPP_REF` | `v0.7.0` |
 | `WHISPER_CPP_REF` | `v1.9.5` |
 | `TARGETARCH` | the build architecture |
 
-Three L4T-specific compatibility shims are applied at build time, each
-patching a real incompatibility rather than working around it:
-`../torch-dist-l4t-compat.py`, `../spark-vllm-l4t-patch.py` and
-`../spark-vllm-xformers-gqa-patch.py`.
+Engine image:
 
-The image also carries the goSpark binaries (copied from the `gospark` stage),
+| Arg | Value |
+|---|---|
+| `SPARKNET_LLM_BASE` | `dustynv/llama_cpp:r35.2.1` (pinned by digest) |
+
+The node image carries the goSpark binaries (copied from the `gospark` stage),
 the compute plane (`/opt/sparknet/compute/`), the goSpark configs, the peer
 bundle tarball, the precontext builder, the audio shim, and the entrypoint at
-`/usr/local/bin/spark-entrypoint`.
-
----
+`/usr/local/bin/spark-entrypoint`. The engine image carries `llama-server`,
+the precontext proxy and the baked MASTERSPIKE/digest text.
 
 ## 7. The compose surface
 
@@ -253,9 +245,10 @@ Profiles: `kv` (kvrouter), `control`, `webui`, `ingest`, `backup`,
 The state directory is bind-mounted from the host:
 `${SPARKNET_STATE_HOST:-../peer-node/.state}` → `/srv/sparknet/peer-node/.state`.
 
-The `ipc: host` and `ulimits` blocks are inherited from the Spark compose
-unchanged — the state contract is the same, so the same host behaviour
-applies.
+The text engine no longer needs host IPC or a large shared-memory segment:
+`llama-server` is a single process, and the aux engines are CPU-only. The
+state bind mount and the env-key surface of the core services are unchanged;
+the `vllm` service mounts only the root model directory read-only.
 
 The fabric's test suite asserts the parity: the same service set, the same
 container names, the same profiles, the same published ports.
@@ -319,12 +312,11 @@ fabric's setup script.
 | Swap | 8 GiB (`8388608` KB) | `--allow-low-swap` |
 | Free disk | ~25 GB (`25600` MB) | `--allow-low-disk` |
 
-Both floors exist for the same reason: **the vLLM / xformers source build
-OOM-kills itself on a 16 GB machine without them.** The xformers sdist
-compile and the vLLM link are the expensive steps, and a machine that runs
-out of memory mid-build fails hours in, with an error that does not obviously
-point at the cause. The overrides exist for machines where the operator has
-judged the risk; they are not the default.
+Both floors are conservative. The node image still compiles the two aux
+engines (llama.cpp and whisper.cpp) and pulls the large engine base; a
+machine that runs out of disk or memory mid-build fails with an error that
+does not obviously point at the cause. The overrides exist for machines where
+the operator has judged the risk; they are not the default.
 
 ### 9.2 What it does, in order
 
@@ -433,14 +425,15 @@ grammar, and the compose resolution.
 
 ## 13. How to make a change correctly
 
-### 13.1 Changing the AGX image
+### 13.1 Changing the AGX images
 
 - Keep every pin an `ARG` with an explicit default, so a build can be
   overridden without editing the file.
-- Keep the `nvcc` gate and the `import vllm, vllm._C` gate. They are what
-  turn "the base changed under us" from a runtime surprise into a build
-  failure.
-- Keep the arch flag at `7.0+PTX`.
+- Keep the node image and the engine image separate. The node image carries
+  goSpark, compute, the aux engines, the bundle and `vllm-stub`; the engine
+  image carries `llama-server` and the precontext proxy.
+- Keep the engine base pinned by digest (`SPARKNET_LLM_BASE`) and the model
+  file explicit (`SPARKNET_LLM_MODEL_FILE`); never bake a model into an image.
 - Keep the audio shim **Python 3.8 compatible**. The linter's opinion does
   not override the base image's interpreter.
 - Every `COPY` source must be in the export manifest; the publish's
@@ -480,19 +473,21 @@ grammar, and the compose resolution.
 
 | Thing | Where | Notes |
 |---|---|---|
-| Model | compose env | `mistralai/Mistral-7B-Instruct-v0.2` by default; overridable. |
-| `VLLM_MAX_MODEL_LEN` | compose env | `8192`. |
-| `VLLM_SHM_SIZE` | compose env | `4gb`. |
-| `VLLM_CLI` | compose env | Decides the engine dialect. |
-| `VLLM_GIT_URL` / `VLLM_GIT_REF` | build args | The escape hatch for the pinned vLLM. |
-| `MAX_JOBS` | build arg | `4` — the compile parallelism 16 GB can survive. |
+| Model file | `SPARKNET_LLM_MODEL_FILE` | Teacher on `agx64`, student on `agx32`; a read-only bind from `/opt/sparknet/models`. |
+| Model alias | `VLLM_MODEL` | The OpenAI model id; defaults to `qwen3.6-35b` / `qwen3.6-0.6b`. |
+| `VLLM_MAX_MODEL_LEN` | compose env | `8192`; maps to `llama-server --ctx-size`. |
+| `SPARKNET_LLM_CTX` | compose env | Explicit context override; empty falls back to `VLLM_MAX_MODEL_LEN`. |
+| `SPARKNET_LLM_NGL` | compose env | `99` GPU layers. |
+| `SPARKNET_LLM_PARALLEL` | compose env | `1` server slot. |
+| `SPARKNET_LLM_BASE` | build arg | The pinned `jetson-containers` `llama_cpp` image. |
+| `SPARKNET_MODELS_HOST` | compose env | Host root model directory; `/opt/sparknet/models` by default. |
 | `WHISPER_UPSTREAM` | shim env | `http://127.0.0.1:8004` by default. |
 | `SPARKNET_IMAGE_TAG` | compose env | The image tag; `dev` by default. |
 | `SPARKNET_STATE_HOST` | compose env | The host state directory; `../peer-node/.state` by default. |
 | `SPARKNET_PLATFORM` | setup script | `spark` or `agx`; picks the compose and the env-file together. |
 | goSpark pin | `GOSPARK_PIN` | The one goSpark revision this distribution builds against. |
 | Swap floor | `bootstrap-agx.sh` | 8 GiB. |
-| Disk floor | `bootstrap-agx.sh` | ~25 GB. |
+| Disk floor | `bootstrap-agx.sh` | ~25 GB (the two images plus the active GGUF fit in ~12 GB of image layers). |
 
 **Secrets** live on the host, never in an image layer. The device needs
 credentials to read the private goSpark repository — a fine-grained PAT or a
@@ -513,14 +508,14 @@ profile, so OpenCode and Open WebUI see the same memory for the same vault.
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
-| The image build OOM-kills during the xformers or vLLM build | The machine has under 8 GiB swap. | `bootstrap-agx.sh`'s preflight; `--allow-low-swap` if you have judged the risk. |
+| The image build OOM-kills | The node image still compiles the aux engines; the machine has under 8 GiB swap. | `bootstrap-agx.sh`'s preflight; `--allow-low-swap` if you have judged the risk. |
 | The image build fails on disk space | Under ~25 GB free. | `--allow-low-disk`; the disk floor. |
-| `import vllm` succeeds but the engine does not start | The compiled extension `vllm._C` did not build. | The `import vllm, vllm._C` gate in the Dockerfile. |
-| The engine rejects a modern CLI flag | `VLLM_CLI` is in the "modern" dialect but the pinned vLLM is v0.2.7. | `VLLM_CLI`; the entrypoint's last-word switch. |
-| The GPU is not used | The arch flag is wrong. | `TORCH_CUDA_ARCH_LIST="7.0+PTX"`; the `nvcc` gate. |
+| `llama-server` is missing | The `vllm` service is running the node image, not `sparknet-llm:agx`. | The `vllm` service image/build; `SPARKNET_LLM_TAG`. |
+| The engine starts but cannot find the model | `SPARKNET_LLM_MODEL_FILE` is unset, or the file is not under the mounted `/opt/sparknet/models`. | The env file; `SPARKNET_MODELS_HOST`; the GGUF path. |
+| The GPU is not used | `--n-gpu-layers` is low, or MAXN is not set. | `SPARKNET_LLM_NGL=99`; `sudo nvpmodel -m 0`; `sudo jetson_clocks`. |
 | The audio profile returns 404 | The shim is not running, or whisper is not up. | `spark-entrypoint whisper-asr`; `WHISPER_UPSTREAM`. |
 | The shim fails at import on a modern host | The file is Python 3.8 grammar by design — `Optional[...]`, not `X \| None`. | The file's `ruff: noqa` header; the verifier's 3.8 grammar check. |
-| The model does not fit in memory | The Spark default is still set. | `mistralai/Mistral-7B-Instruct-v0.2`; `VLLM_MAX_MODEL_LEN`. |
+| The model does not fit in memory | The wrong role model is staged, or the context is too large. | The teacher/student file; `VLLM_MAX_MODEL_LEN`/`SPARKNET_LLM_CTX`; stop the aux profiles. |
 | The compose does not start on the Xavier | The wrong platform's env-file was used. | `--platform agx`; `spark-agx.env`. |
 | `make goagx-drift-check` fails | The published repository is behind this tree. | `make goagx-publish`. |
 | The publish refuses | The private remote cannot be fetched. | It self-skips with a notice; check credentials. |
@@ -533,12 +528,13 @@ profile, so OpenCode and Open WebUI see the same memory for the same vault.
 
 Broadly:
 
-- **Implemented and exercised** — the AGX image build with a source-built
-  vLLM, the 14-service compose surface, the audio shim, the llama.cpp
-  embed/rerank profiles, the bootstrap preflight and the goSpark fetch, the
-  publish and drift-check tooling, and the platform parity assertions. The
-  battery was run end to end on real AGX Orin nodes on 2026-10-21; the
-  measurements are recorded in `README.md`.
+- **Implemented and exercised** — the two-image AGX split (node +
+  `sparknet-llm:agx`), the 14-service compose surface, the precontext proxy,
+  the audio shim, the llama.cpp embed/rerank profiles, the bootstrap
+  preflight and the goSpark fetch, the publish and drift-check tooling, and
+  the platform parity assertions. The old vLLM battery was run on real nodes
+  on 2026-10-21 and is kept as historical provenance in `README.md`; the
+  Step 108 llama.cpp live checks are the current gate.
 - **Contracted and scaffolding** — the master-side surfaces the AGX inherits
   from the fabric (registry push listener, scheduler, share ratification).
 - **Deliberately parked** — the destructive legs of the deployment runbook
