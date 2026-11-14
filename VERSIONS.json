@@ -3,7 +3,7 @@
   "description": "sparknet node distribution for NVIDIA AGX Xavier (sm_72, L4T r35)",
   "platform": "agx",
   "sparknet_repo": "https://github.com/reallife-spark/sparknet.git",
-  "sparknet_sha": "ad152afe3aae327666b98d49567a2eacf33381ab",
+  "sparknet_sha": "8ee4dee81363a6b846470283c24963d5a69dcac0",
   "sparknet_from_git": "HEAD",
   "gospark_repo": "https://github.com/reallife-spark/gospark.git",
   "gospark_sha": "e35b033f000fddcfa75cf993093522a2dc187677",
@@ -11,5 +11,5 @@
   "sparknet_llm_base": "dustynv/llama_cpp:r35.2.1@sha256:a5659335c4b5d31f82b29ec5a04e6e77d219897eef0028db841c9d4c832b90f0",
   "opencode_version": "2.2.5",
   "nats_version": "2.14.2",
-  "published": "2026-11-14T20:01:41Z"
+  "published": "2026-11-14T20:03:14Z"
 }
