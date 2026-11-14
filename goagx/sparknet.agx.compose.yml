@@ -514,19 +514,25 @@ services:
   # baked bge-m3 GGUF. Point the compute worker at it with
   # SPARKNET_EMBED_ENDPOINT=http://vllm-embed:8001/v1/embeddings.
   vllm-embed:
-    <<: [*agx-node]
     profiles: ["embed"]
+    image: sparknet-llm:${SPARKNET_LLM_TAG:-agx}
     container_name: sparknet-vllm-embed
     command: ["llama-embed"]
     environment:
-      <<: *agx-env
+      <<: *llm-env
       VLLM_PORT: "8001"
-      LLAMA_EMBED_MODEL: /opt/sparknet/models/bge-m3-q8_0.gguf
-      LLAMA_EMBED_ALIAS: ${LLAMA_EMBED_ALIAS:-bge-m3}
-      LLAMA_EMBED_CTX: ${LLAMA_EMBED_CTX:-512}
+      LLAMA_EMBED_MODEL: /opt/sparknet/models/qwen3-embedding-0.6b-q8_0.gguf
+      LLAMA_EMBED_ALIAS: ${LLAMA_EMBED_ALIAS:-qwen3-embedding-0.6b}
+      LLAMA_EMBED_POOLING: ${LLAMA_EMBED_POOLING:-last}
+      LLAMA_EMBED_CTX: ${LLAMA_EMBED_CTX:-32768}
+      LLAMA_EMBED_NGL: ${LLAMA_EMBED_NGL:-0}
+      CUDA_VISIBLE_DEVICES: ""
       LLAMA_EMBED_EXTRA_ARGS: ${LLAMA_EMBED_EXTRA_ARGS:-}
     volumes:
-      - *state-volume
+      - type: bind
+        source: ${SPARKNET_MODELS_HOST:-/opt/sparknet/models}/qwen3-embedding-0.6b-q8_0.gguf
+        target: /opt/sparknet/models/qwen3-embedding-0.6b-q8_0.gguf
+        read_only: true
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health >/dev/null 2>&1 || exit 1"]
       interval: 20s

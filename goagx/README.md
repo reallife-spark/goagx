@@ -125,46 +125,44 @@ ports, the env-key surface of the core services, precontext/rag, the
 stub/CPU overlay, `--engine stub` smoke — is identical by test
 (`tests/test_agx_node.py` asserts the parity).
 
-## Two model sets
+## The active Qwen3-2507 pair
 
-Two same-version pairs are kept for the bake-off:
+The Step 110 main/teacher/student pair is:
 
-| Set | Teacher (`agx64`) | Student (`agx32`) |
-|---|---|---|
-| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) |
-| `qwen3` | Qwen3-32B Q4_K_M (19.8 GB) | Qwen3-0.6B Q8_0 (0.64 GB) |
+| Set | Teacher/main (`agx64`) | Student (`agx32`) | State |
+|---|---|---|---|
+| `qwen3-2507` | Qwen3-30B-A3B-2507 Q4_K_M (17.3 GB) | Qwen3-4B-2507 Q4_K_M (2.33 GB) | active |
+| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) | cold |
 
-Both fit on the root NVMe during the bake-off. Select one with:
+Both active models use the full 262,144 context with q8 KV. Select the set or
+switch to the 4B candidate with:
 
 ```sh
-scripts/sparknet-model-set.py --role master --set qwen3.6 --precontext off
-scripts/sparknet-model-set.py --role peer --set qwen3.6 --precontext off
+scripts/sparknet-model-set.py --role master --set qwen3-2507 --precontext on
+scripts/sparknet-model-set.py --role peer --set qwen3-2507 --precontext on
+scripts/sparknet-model-set.py --role master --set qwen3-4b-candidate --precontext on
 ```
 
 The helper writes `peer-node/.state/model-set.env` and recreates only the
 `vllm` service; the main env file and secrets are untouched. The
 `--precontext off` pass measures raw model speed; `--precontext on` measures
-the real node behavior with the MASTERSPIKE text + fabric digest.
+the real node behavior with the MASTERSPIKE text + fabric digest. The
+`qwen3-4b-candidate` set is the distilled student copy synced to `agx64`.
 
-The benchmark uses `scripts/sparknet-model-bench.py` with the OpenAI bake-off
-configs, then `scripts/sparknet-teacher-student-eval.py` for the agreement
-metrics. The quality floor is 1.0. After the bake-off, the winner stays on
-root; the other set moves to `/mnt/ai/models/` and remains available for a
-later re-stage.
+The peer stack also carries Qwen3-Coder-30B (65k, Ollama/OpenCode),
+Qwen3-Embedding-0.6B (RAG/reindex) and Qwen3-VL-4B (Ollama/Open WebUI, 65k).
+They are peer models, not the fabric text-engine pair.
 
-### Bake-off result (2026-11-13)
+### Previous bake-off result (historical)
 
 | Set | Teacher no-pc | Teacher pc | Student no-pc | Student pc | Agreement |
 |---|---:|---:|---:|---:|---:|
 | `qwen3.6` | 18.54 tok/s | 18.08 tok/s | 4.41 tok/s | 4.54 tok/s | 0.653 |
 | `qwen3` | 3.94 tok/s | 3.65 tok/s | 76.78 tok/s | 57.33 tok/s | 0.608 |
 
-Both sets passed the quality floor 1.0. The operator chose **`qwen3.6`** as the
-served winner because its teacher is ~5x faster for distillation; the Qwen3
-student is much faster for chat, but the Qwen3 teacher is slow. The Qwen3 set
-is in the cold store (`/mnt/ai/models/qwen3-32b-q4-k-m/`,
-`/mnt/ai/models/qwen3-0.6b-q8/`); re-stage it with
-`scripts/sparknet-model-stage.py --model-id qwen3-32b-q4-k-m --to-root`.
+This table is the previous Qwen3.6/Qwen3-32B comparison. Step 110 replaces
+that pair with the Qwen3-2507 main/teacher/student set; the old measurements
+are retained as provenance, not as the current winner.
 
 ## Historical: vLLM-era measurements (2026-10-21)
 

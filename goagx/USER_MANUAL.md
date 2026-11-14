@@ -170,29 +170,24 @@ Every one of them is an overridable env-file value. The active GGUF,
 tokenizer, precontext and KV live on the root NVMe; the vaults and the cold
 model store stay on `/mnt/ai`.
 
-### 4.7 Two sets for the bake-off
+### 4.7 The active Qwen3-2507 pair
 
-| Set | Teacher (`agx64`) | Student (`agx32`) |
-|---|---|---|
-| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) |
-| `qwen3` | Qwen3-32B Q4_K_M (19.8 GB) | Qwen3-0.6B Q8_0 (0.64 GB) |
+| Set | Teacher/main (`agx64`) | Student (`agx32`) | State |
+|---|---|---|---|
+| `qwen3-2507` | Qwen3-30B-A3B-2507 Q4_K_M (17.3 GB) | Qwen3-4B-2507 Q4_K_M (2.33 GB) | active |
+| `qwen3.6` | Qwen3.6-35B-A3B Q4_K_M (22.1 GB) | Qwen3.6-27B Q4_K_M (16.8 GB) | cold |
 
-`scripts/sparknet-model-set.py --role master|peer --set qwen3.6|qwen3
+`scripts/sparknet-model-set.py --role master|peer --set qwen3-2507|qwen3.6
 --precontext on|off` writes `peer-node/.state/model-set.env` and recreates
-only `vllm`. Run the no-precontext pass first, then the precontext pass.
-Both sets fit on root during the comparison; the winner stays on root and the
-other moves to `/mnt/ai/models/`.
+only `vllm`. The active pair uses 262,144 context with q8 KV. The
+`qwen3-4b-candidate` set points at the distilled student copy on `agx64`.
 
-The 2026-11-13 bake-off (quality floor 1.0) measured:
+The peer stack also carries Qwen3-Coder-30B (65k), Qwen3-Embedding-0.6B
+(RAG/reindex) and Qwen3-VL-4B (Ollama/Open WebUI, 65k). See
+`contracts/model-store.md` and the peer manifests.
 
-| Set | Teacher no-pc | Teacher pc | Student no-pc | Student pc | Agreement |
-|---|---:|---:|---:|---:|---:|
-| `qwen3.6` | 18.54 | 18.08 | 4.41 | 4.54 | 0.653 |
-| `qwen3` | 3.94 | 3.65 | 76.78 | 57.33 | 0.608 |
-
-The operator chose `qwen3.6` as the served winner because its teacher is ~5x
-faster for distillation; the Qwen3 set is in the cold store and can be
-re-staged with `scripts/sparknet-model-stage.py`.
+The previous Qwen3.6/Qwen3-32B bake-off numbers are historical; Step 110
+re-runs the measurements with the new pair.
 
 ---
 
