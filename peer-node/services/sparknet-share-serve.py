@@ -406,7 +406,7 @@ class ShareService:
                 additions = set(hashes)
                 conflicts = []
             inbox_root = (self.vault_root / "01_Inbox").resolve()
-            inbox = (inbox_root / f"share-{share_id}").resolve()
+            inbox = (inbox_root / share_id).resolve()
             try:
                 inbox.relative_to(inbox_root)
             except ValueError as exc:

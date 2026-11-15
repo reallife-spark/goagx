@@ -351,7 +351,7 @@ def test_a_kb_share_payload_lands_in_the_review_inbox(share: Any, http: Any, pai
         )
         assert status == 200, body
         assert body["additions"] == ["notes/shared.md"]
-        staged = Path(b.vault_root) / "01_Inbox" / f"share-{offer['share_id']}" / "notes" / "shared.md"
+        staged = Path(b.vault_root) / "01_Inbox" / offer["share_id"] / "notes" / "shared.md"
         assert staged.read_text() == "# shared\n"
 
         status, body = _post(

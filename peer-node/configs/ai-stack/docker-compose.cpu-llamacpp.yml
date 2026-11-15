@@ -1,0 +1,86 @@
+# CPU-only llama.cpp + Open WebUI stack for a peer with no NVIDIA runtime.
+#
+# This is the fallback for a node whose GPU is absent, unbound or too small for
+# the supported AGX/Spark image. It keeps the same boundary as the production
+# AI stack: no key, no signer socket and no $SPARKNET_STATE_DIR mount. The
+# model file is read-only; chat state lives in the named WebUI volume.
+#
+# Usage:
+#   docker compose -f docker-compose.cpu-llamacpp.yml --env-file <state>/webui.env up -d
+#
+# Required env:
+#   SPARKNET_WEBUI_ADMIN_PASSWORD   generated at deploy, mode 0600
+#   SPARKNET_WEBUI_ADMIN_EMAIL      default admin@sparknet.local
+#   LLAMA_MODEL_FILE                filename under MODEL_DIR
+#   MODEL_DIR                       host directory containing the GGUF
+#
+# The WebUI is the only published surface (8181). llama.cpp stays on the
+# compose network and on host loopback for a local model-list check.
+
+name: sparknet-node-ai-stack-cpu
+
+services:
+  llama:
+    image: ${LLAMA_CPP_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: sparknet-llama-cpu
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/${LLAMA_MODEL_FILE:?set LLAMA_MODEL_FILE}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8100"
+      - --ctx-size
+      - ${LLAMA_CTX_SIZE:-4096}
+      - --n-gpu-layers
+      - "0"
+      - --threads
+      - ${LLAMA_THREADS:-4}
+      - --jinja
+      - --alias
+      - ${LLAMA_MODEL_NAME:-qwen3-4b-2507}
+    volumes:
+      - ${MODEL_DIR:?set MODEL_DIR}:/models:ro
+    ports:
+      - "127.0.0.1:8100:8100"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${WEBUI_TAG:-v0.13.0}
+    container_name: sparknet-webui-cpu
+    restart: unless-stopped
+    depends_on:
+      - llama
+    ports:
+      - "${WEBUI_BIND:-0.0.0.0}:8181:8080"
+    environment:
+      OPENAI_API_BASE_URL: "http://llama:8100/v1"
+      OPENAI_API_BASE_URLS: "http://llama:8100/v1"
+      OPENAI_API_KEY: "local"
+      OPENAI_API_KEYS: "local"
+      ENABLE_OLLAMA_API: "false"
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "false"
+      WEBUI_ADMIN_EMAIL: "${SPARKNET_WEBUI_ADMIN_EMAIL:-admin@sparknet.local}"
+      WEBUI_ADMIN_PASSWORD: "${SPARKNET_WEBUI_ADMIN_PASSWORD:?set SPARKNET_WEBUI_ADMIN_PASSWORD}"
+      WEBUI_ADMIN_NAME: "Sparknet Admin"
+      WEBUI_NAME: "Sparknet Node 0003"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-}"
+      DEFAULT_MODELS: "${LLAMA_MODEL_NAME:-qwen3-4b-2507}"
+      ENABLE_MEMORIES: "false"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_CODE_INTERPRETER: "false"
+      ENABLE_IMAGE_GENERATION: "false"
+    volumes:
+      - open-webui-data:/app/backend/data
+
+volumes:
+  open-webui-data:

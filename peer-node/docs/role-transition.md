@@ -46,6 +46,22 @@ Flow:
    (charter: the master loads peer services by path); `make shims-check`,
    `keys-check` and the contract tests keep passing.
 
+## Joining a third member (admission)
+
+A pair admits a third member with the same member ceremony, not a fresh
+election. The existing Master stays the candidate; the child root is chained to
+the pair root and names all three. The new member and the existing peer pass
+`--as-member` so they persist `trust_root` without taking the master role; the
+Master passes `--root-doc` and flips normally. The exchange is run with
+`--trust <pair-root> --admission`. The child root must be schema 1.3, keep the
+Master and `master_pubkey` unchanged, keep the existing members' four signed
+fields unchanged, add exactly one member, drop none, and carry all three
+signatures. See `contracts/consensus-protocol.md` §Admission.
+
+The same `--as-member --members` adoption path is used by a peer adopting a
+lawful `3 -> 3` key-rotation re-formation; `--admission` is only for the
+`2 -> 3` join.
+
 What does **not** confer authority, and never did: an operational key sitting
 in a key directory (generate one and it still signs nothing), running the
 `master-node/` subvault, or editing any manifest. Only a root all three

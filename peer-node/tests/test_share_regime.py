@@ -101,6 +101,16 @@ def _kill_master(clock: Clock, node_count: list[int]) -> dict:
     return {"alice": a, "bob": b, "master": m, "nodes": nodes}
 
 
+def test_share_ids_are_unique_across_nodes() -> None:
+    """Node-local share-1 counters must not collide when two nodes both offer."""
+    clock = Clock()
+    a, b, _ = _pair(clock)
+    first = a.offer("kb-view", toward="bob")
+    second = b.offer("kb-view", toward="alice")
+    assert first["share_id"] != second["share_id"]
+    assert first["share_id"].startswith("share-") and second["share_id"].startswith("share-")
+
+
 # --- DoD 1: invite open 1 h; acceptance requires choosing, may narrow ---------
 
 

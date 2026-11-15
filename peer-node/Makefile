@@ -291,14 +291,20 @@ wg-render-peer: ## render peer wg (needs REGISTRY)
 
 # Runs the shared member ceremony (bid -> vote -> co-sign -> install).
 # Other members endorse a requester with: CANDIDATE=<node-id> make election-request
-election-request: ## run this node's part of the election (URL= CANDIDATE= NODE_ID= IDENTITY= KEY_DIR= WAIT=)
+election-request: ## run this node's part of the election (URL= CANDIDATE= NODE_ID= IDENTITY= KEY_DIR= WAIT= ROOT_DOC= ROOT_OUT= TRUST= MEMBERS= AS_MEMBER=1 ADMISSION=1)
 	@$(ROLE_ROOT)/scripts/sparknet-election-request.sh \
 	  $(if $(URL),--url "$(URL)") \
 	  $(if $(NODE_ID),--node-id "$(NODE_ID)") \
 	  $(if $(CANDIDATE),--candidate "$(CANDIDATE)") \
 	  $(if $(IDENTITY),--identity "$(IDENTITY)") \
 	  $(if $(KEY_DIR),--key-dir "$(KEY_DIR)") \
-	  $(if $(WAIT),--wait-seconds "$(WAIT)")
+	  $(if $(WAIT),--wait-seconds "$(WAIT)") \
+	  $(if $(ROOT_DOC),--root-doc "$(ROOT_DOC)") \
+	  $(if $(ROOT_OUT),--root-out "$(ROOT_OUT)") \
+	  $(if $(TRUST),--trust "$(TRUST)") \
+	  $(if $(MEMBERS),--members "$(MEMBERS)") \
+	  $(if $(AS_MEMBER),--as-member) \
+	  $(if $(ADMISSION),--admission)
 
 ai-stack-config: ## Validate the node AI stack compose parses (no images pulled)
 	@docker compose -f "$(VAULT_ROOT)/configs/ai-stack/docker-compose.yml" config --quiet

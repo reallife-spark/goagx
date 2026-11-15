@@ -307,20 +307,25 @@ def test_share_endpoints_declare_and_close_a_session_share(server, ctx):
     share = payload["share"]
     # Step 8: a created share is an *invite* (a 1 h draft), not already open —
     # opening one needs a second node to accept it, which this host lacks.
-    assert share["share_id"] == "share-1" and share["kind"] == "session-view" and share["status"] == "invite"
+    first_id = share["share_id"]
+    assert first_id.startswith("share-") and share["kind"] == "session-view" and share["status"] == "invite"
     assert share["accept_deadline"], "every invite carries its clock"
 
     status, payload = server.request("POST", f"/session/{sid}/share", {"kind": "session-handoff"}, token=token)
-    assert status == 200 and payload["share"]["share_id"] == "share-2"
+    assert status == 200
+    second_id = payload["share"]["share_id"]
+    assert second_id != first_id
 
     status, payload = server.request("GET", f"/session/{sid}/shares", token=token)
-    assert status == 200 and [s["share_id"] for s in payload["shares"]] == ["share-1", "share-2"]
+    assert status == 200
+    ids = [s["share_id"] for s in payload["shares"]]
+    assert first_id in ids and second_id in ids
 
-    status, payload = server.request("DELETE", f"/session/{sid}/share/share-1", token=token)
+    status, payload = server.request("DELETE", f"/session/{sid}/share/{first_id}", token=token)
     assert status == 200 and payload["share"]["status"] == "closed"
     assert payload["share"]["closed_at"]
 
-    status, payload = server.request("DELETE", f"/session/{sid}/share/share-1", token=token)
+    status, payload = server.request("DELETE", f"/session/{sid}/share/{first_id}", token=token)
     assert status == 409 and payload["reason"] == "already-closed"
     status, payload = server.request("DELETE", f"/session/{sid}/share/share-99", token=token)
     assert status == 404 and payload["reason"] == "unknown-share"

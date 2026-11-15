@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 
 try:  # Python 3.9+
     from collections.abc import Callable
@@ -499,7 +500,11 @@ class Regime:
             raise ShareError(400, "malformed", "a share must name its counterpart")
         departments = self._department_check(toward)
         self._seq += 1
-        share_id = f"share-{self._seq}"
+        # A node-local counter alone collides when two nodes both start at
+        # share-1: the receiver keeps the old closed record and the new offer is
+        # refused as already-known. A random suffix makes the id unique across
+        # nodes without changing the contract's safe identifier shape.
+        share_id = f"share-{self._seq}-{secrets.token_hex(4)}"
         now = self._iso()
         share: dict[str, Any] = {
             "schema": SHARE_SCHEMA,

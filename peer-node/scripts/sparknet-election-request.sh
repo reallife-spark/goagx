@@ -12,6 +12,13 @@
 #   CANDIDATE=<requester> make election-request
 # on their own nodes. Install and refusal rules: shared/sparknet-election.py,
 # normative in contracts/consensus-protocol.md.
+#
+# A third member joins with the same member ceremony plus the admission flags:
+#   --admission --members <roster> --trust <parent-root> --as-member --root-out <new-root>
+# An existing peer adopts the child by passing its held root as --root-doc and
+# --as-member. The Master keeps --root-doc and omits --as-member. Every join
+# participant passes the out-of-band roster so the exchange cannot substitute
+# a different new member.
 set -euo pipefail
 
 ROLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,15 +31,29 @@ CANDIDATE=""
 IDENTITY="$ROLE_ROOT/manifests/node-identity.json"
 KEY_DIR="${SPARKNET_KEY_DIR:-$SPARKNET_STATE_DIR/keys}"
 WAIT="${SPARKNET_ELECTION_WAIT:-30}"
+ROOT_DOC=""
+ROOT_OUT=""
+TRUST=""
+MEMBERS=""
+AS_MEMBER=0
+ADMISSION=0
 
 usage() {
   cat <<USAGE
 usage: sparknet-election-request.sh [--url <url>] [--candidate <node-id>]
                                     [--node-id <node-id>] [--identity <file>]
                                     [--key-dir <dir>] [--wait-seconds <n>]
+                                    [--root-doc <file>] [--root-out <file>]
+                                    [--trust <parent-root>] [--members <roster>]
+                                    [--admission] [--as-member]
 
 Runs the full member ceremony against a running election exchange:
 bid -> vote -> wait for the root -> co-sign -> install on --identity.
+
+Admission (join) uses the same ceremony:
+  new member     --admission --members <roster> --trust <parent-root> --as-member --root-out <new-root>
+  existing peer  --admission --members <roster> --root-doc <held-root> --as-member
+  elected Master --admission --members <roster> --root-doc <held-root>
 
 Defaults:
   --url          \$SPARKNET_ELECTION_URL or http://127.0.0.1:4210
@@ -52,12 +73,27 @@ while [ $# -gt 0 ]; do
     --identity) IDENTITY="$2"; shift 2 ;;
     --key-dir) KEY_DIR="$2"; shift 2 ;;
     --wait-seconds) WAIT="$2"; shift 2 ;;
+    --root-doc) ROOT_DOC="$2"; shift 2 ;;
+    --root-out) ROOT_OUT="$2"; shift 2 ;;
+    --trust) TRUST="$2"; shift 2 ;;
+    --members) MEMBERS="$2"; shift 2 ;;
+    --as-member) AS_MEMBER=1; shift ;;
+    --admission) ADMISSION=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage; exit 1 ;;
   esac
 done
 
 [ -f "$IDENTITY" ] || { echo "identity not found: $IDENTITY" >&2; exit 1; }
+
+if [ "$AS_MEMBER" = 1 ] && [ -z "$MEMBERS" ]; then
+  echo "--as-member requires --members with the out-of-band roster" >&2
+  exit 1
+fi
+if [ "$ADMISSION" = 1 ] && [ -z "$MEMBERS" ]; then
+  echo "--admission requires --members with the out-of-band roster" >&2
+  exit 1
+fi
 
 PY="${PY:-$SPARKNET_FABRIC_ROOT/.venv/bin/python}"
 [ -x "$PY" ] || PY="$(command -v python3)"
@@ -84,10 +120,19 @@ if [ ! -f "$KEY_DIR/cluster.ed25519" ]; then
   exit 1
 fi
 
-exec "$PY" "$ELECTION" --shared-dir "$SPARKNET_SHARED_DIR" member \
-  --url "$URL" \
-  --node-id "$NODE_ID" \
-  --candidate "$CANDIDATE" \
-  --identity "$IDENTITY" \
-  --key-dir "$KEY_DIR" \
+ARGS=(
+  --url "$URL"
+  --node-id "$NODE_ID"
+  --candidate "$CANDIDATE"
+  --identity "$IDENTITY"
+  --key-dir "$KEY_DIR"
   --wait-seconds "$WAIT"
+)
+if [ -n "$ROOT_DOC" ]; then ARGS+=(--root-doc "$ROOT_DOC"); fi
+if [ -n "$ROOT_OUT" ]; then ARGS+=(--root-out "$ROOT_OUT"); fi
+if [ -n "$TRUST" ]; then ARGS+=(--trust "$TRUST"); fi
+if [ -n "$MEMBERS" ]; then ARGS+=(--members "$MEMBERS"); fi
+if [ "$AS_MEMBER" = 1 ]; then ARGS+=(--as-member); fi
+if [ "$ADMISSION" = 1 ]; then ARGS+=(--admission); fi
+
+exec "$PY" "$ELECTION" --shared-dir "$SPARKNET_SHARED_DIR" member "${ARGS[@]}"
