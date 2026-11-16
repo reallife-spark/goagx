@@ -1,0 +1,39 @@
+# The peer's auth gateway (loopback 8190) — the only identity injector in front
+# of Open WebUI. nginx on 8181 calls `/auth/verify` as an auth_request. Online it
+# verifies the OIDC session through the local oauth2-proxy; offline it accepts
+# the admin client certificate nginx verified against the fabric admin CA. It
+# also verifies a Master proxy assertion when present.
+#
+# It binds loopback only and holds no signing key: the Master assertion is
+# verified with the trust root's public key, and the node's own identity key is
+# not needed. nginx must strip caller X-Auth-Request-* headers before the
+# subrequest; the SSO template does that.
+#
+# Staged, not enabled by `make units`; `make auth-gateway-unit` stages it.
+#
+# See contracts/sso-identity.md and ADR 0022.
+
+[Unit]
+Description=Sparknet node auth gateway (identity injection, never authority)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.env
+Environment=SPARKNET_STATE_DIR=%h/.local/state/sparknet/peer-node
+Environment=SPARKNET_OIDC_AUTH_URL=http://127.0.0.1:4180/oauth2/auth
+ExecStart=%h/.local/bin/sparknet-auth-gateway \
+    --bind 127.0.0.1 \
+    --port 8190 \
+    --state-dir ${SPARKNET_STATE_DIR} \
+    --node-id ${SPARKNET_NODE_ID} \
+    --trust-root ${SPARKNET_STATE_DIR}/trust-root.json \
+    --oidc-auth-url ${SPARKNET_OIDC_AUTH_URL}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/sparknet/peer-node

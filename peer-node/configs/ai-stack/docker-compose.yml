@@ -146,7 +146,7 @@ services:
       SPARKNET_CONSOLE_UPSTREAM: "127.0.0.1:8099"
       SPARKNET_WEBUI_PORT: "8180"
     volumes:
-      - ../../../webui/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../../../webui/${SPARKNET_NGINX_TEMPLATE:-nginx.conf.template}:/etc/nginx/templates/default.conf.template:ro
       - ../../../webui/console/sparknet-menu.js:/etc/nginx/sparknet-menu.js:ro
     depends_on:
       - open-webui

@@ -245,6 +245,19 @@ def _load_admin_agent() -> Any:
     return load_by_path("sparknet_admin_agent_bridge", path, error=FileNotFoundError)
 
 
+def _load_sso() -> Any:
+    """The one federated-identity policy module, loaded by path.
+
+    The bridge writes a signed `set_user_role` as a per-node override; it does
+    not reimplement the override shape or the precedence rule.
+    """
+    return _load_shared(
+        "sparknet-sso",
+        "sparknet_sso_bridge",
+        ("sparknet-authz.py", "sparknet-sso.py"),
+    )
+
+
 def _load_guard_replay() -> Any:
     """The one replay guard, reused from the guard service by path.
 
@@ -1512,6 +1525,45 @@ class Bridge:
             self._webui_token = agent.webui_token(base, email, agent.load_admin_password(pw_file))
         return base, self._webui_token
 
+    def _record_role_override(self, request: dict[str, Any], role: str) -> None:
+        """Persist a successful signed `set_user_role` as a per-node override.
+
+        The IdP group is the baseline; this file is the explicit exception the
+        Master signed. It names only exceptions, not a second user database.
+        A write failure is logged to stderr but never turns a successful WebUI
+        role change into a failed request; the next reconcile reports the drift.
+        """
+        user_key = str(request.get("user_email") or request.get("user_id") or "").strip().lower()
+        if not user_key or role not in ("admin", "user"):
+            return
+        try:
+            sso = _load_sso()
+            path = _state_dir(self.vault_root) / sso.OVERRIDE_FILENAME
+            try:
+                overrides = sso.load_overrides(path)
+            except sso.SSOError:
+                overrides = {}
+            record = sso.validate_override(
+                {
+                    "role": role,
+                    "set_by": str(request.get("master_node_id") or "master"),
+                    "request_id": str(request.get("request_id") or ""),
+                    "set_at": self._now().isoformat().replace("+00:00", "Z"),
+                    "reason": str(request.get("reason") or "signed admin-supervise set_user_role"),
+                }
+            )
+            overrides[user_key] = record
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(overrides, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        except Exception as exc:  # noqa: BLE001 - the override is evidence, not the role change
+            print(f"[bridge] role override not recorded for {user_key}: {exc}", file=sys.stderr)
+
     def _read_admin_events(self) -> dict[str, Any]:
         """Return this node's auth-event spool, newest ``ADMIN_EVENTS_MAX`` rows.
 
@@ -1671,6 +1723,8 @@ class Bridge:
                 "webui_status": webui_status,
                 "detail": result,
             }
+        if action == "set_user_role":
+            self._record_role_override(unsigned, str(unsigned.get("role") or ""))
         return 200, {"ok": True, "action": action, "webui_status": webui_status, "result": result}
 
     def _memory_gateway(self, action: str, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:

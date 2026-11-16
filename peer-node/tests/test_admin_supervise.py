@@ -674,3 +674,32 @@ def test_memory_action_without_a_local_token_is_refused(server, ctx, master_key,
     status, payload = server.post("/admin/memory_status", body)
     assert status == 503
     assert payload["reason"] == "memory-token-missing"
+
+
+def test_set_user_role_records_a_per_node_override(tmp_path):
+    """A signed set_user_role is also the explicit per-node exception record."""
+
+    class Dummy:
+        vault_root = tmp_path
+
+        def _now(self):
+            return NOW
+
+        _record_role_override = bridge_mod.Bridge._record_role_override
+
+    Dummy()._record_role_override(
+        {
+            "master_node_id": "master-1",
+            "request_id": "admin-1",
+            "user_email": "User@Example.Test",
+            "role": "admin",
+            "reason": "reviewed",
+        },
+        "admin",
+    )
+    path = tmp_path / ".state" / "admin-role-overrides.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["user@example.test"]["role"] == "admin"
+    assert data["user@example.test"]["set_by"] == "master-1"
+    assert data["user@example.test"]["request_id"] == "admin-1"
+    assert path.stat().st_mode & 0o777 == 0o600

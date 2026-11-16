@@ -426,6 +426,14 @@ current: done
     bundle build and bundle verification are green. No peer live claim. The
     goagx republish remains with the Master key holder.
 
+## Fabric Step 113 pointer
+
+The federated admin identity and offline break-glass work is owned by fabric
+`PLAN.md` Step 113, `contracts/sso-identity.md` and ADR 0022. The peer-side
+services (node auth gateway, trusted-header ingress, offline client-certificate
+path, role override, offline-repair record) are tracked there; do not duplicate
+the steps in this file.
+
 ## Next
 
 `current:` moves one step at a time, and only after the DoD is verified.

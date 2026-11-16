@@ -24,7 +24,7 @@ PY := $(if $(wildcard $(VENV_PY)),$(VENV_PY),$(if $(wildcard $(FABRIC_VENV_PY)),
         install-config keys wg-render authz-verify anchor guard-status guard-contract \
         peer-manifest containment wiki-preflight wiki-status wiki-lint wiki-capture skills-sync skills-check clean \
         provenance-verify user-init provenance-append ingest accept-inbox review-inbox precommit shims-check keys-check context-pack context-check governance-check exec-policy-check exec-daemon \
-        ai-stack-config admin-agent-help container-build container-load container-config container-preflight container-up \
+        ai-stack-config admin-agent-help auth-gateway auth-gateway-unit offline-repair container-build container-load container-config container-preflight container-up \
         container-health container-down model-generate model-verify model-build model-serve rfi-request vault-health vault-heal \
         opencode-runtime opencode-runtime-vm opencode-runtime-clean opencode-certify
 
@@ -311,6 +311,18 @@ ai-stack-config: ## Validate the node AI stack compose parses (no images pulled)
 
 admin-agent-help: ## Admin agent --help / --serve (peer PLAN Step 12; no-op without --serve)
 	@$(PY) "$(VAULT_ROOT)/services/sparknet-admin-agent.py" --help
+
+auth-gateway: ## Node auth gateway --help / --check (contracts/sso-identity.md)
+	@$(PY) "$(VAULT_ROOT)/services/sparknet-auth-gateway.py" --help
+
+UNIT_DIR ?= /etc/systemd/system
+
+auth-gateway-unit: ## Stage the auth gateway unit ONLY (does not enable it)
+	@install -Dm644 "$(VAULT_ROOT)/systemd/sparknet-auth-gateway.service" "$(UNIT_DIR)/sparknet-auth-gateway.service"
+	@echo "  ✓ staged sparknet-auth-gateway.service into $(UNIT_DIR) — not enabled."
+
+offline-repair: ## Record/list/check signed offline-repair evidence (never authority)
+	@$(PY) "$(VAULT_ROOT)/services/sparknet-offline-repair.py" --help
 
 # --- node container (peer PLAN Step 2) ----------------------------------------
 #
