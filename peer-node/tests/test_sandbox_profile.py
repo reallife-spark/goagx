@@ -293,13 +293,17 @@ def test_openshell_forward_constructor_takes_the_error_class(tmp_path: Path) -> 
 
 
 def test_engine_openshell_lifecycle_with_fake_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPARKNET_OWNER_UID", "1000")
-    monkeypatch.setenv("SPARKNET_OWNER_GID", "1000")
+    # The identity must be the test process's own: a non-root run can only
+    # reconcile a vault to its own UID/GID. Hardcoding 1000 passes only on a
+    # host whose user is 1000 and fails closed on any other (CI runs as 1001).
+    owner_uid, owner_gid = os.getuid(), os.getegid()
+    monkeypatch.setenv("SPARKNET_OWNER_UID", str(owner_uid))
+    monkeypatch.setenv("SPARKNET_OWNER_GID", str(owner_gid))
     monkeypatch.delenv("SPARKNET_OWNER_USER", raising=False)
     vaults = tmp_path / "vaults"
     (vaults / "peer-testuser").mkdir(parents=True)
     owner = tmp_path / "owner.json"
-    owner.write_text(json.dumps({"driver": "vm", "uid": 1000, "gid": 1000}), encoding="utf-8")
+    owner.write_text(json.dumps({"driver": "vm", "uid": owner_uid, "gid": owner_gid}), encoding="utf-8")
     args = ENGINE._parser().parse_args(
         [
             "--sandbox-backend",
@@ -344,7 +348,12 @@ def test_engine_openshell_lifecycle_with_fake_cli(tmp_path: Path, monkeypatch: p
             return json.dumps(
                 {
                     "phase": "Ready",
-                    "conditions": [{"type": "WorkloadIdentity", "message": "Resolved workload UID:GID is 1000:1000"}],
+                    "conditions": [
+                        {
+                            "type": "WorkloadIdentity",
+                            "message": f"Resolved workload UID:GID is {owner_uid}:{owner_gid}",
+                        }
+                    ],
                 }
             )
         if argv[:2] == ["sandbox", "create"]:
